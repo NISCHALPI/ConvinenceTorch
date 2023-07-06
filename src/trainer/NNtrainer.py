@@ -105,7 +105,11 @@ class NNtrainer(BaseTrainer):
             logger.debug(msg="No lrscheduler is passed in the NNtrainer")
 
 
-    def train(self, trainloader: DataLoader , valloader : tp.Optional[DataLoader] = None ,  epoch : int = 100, show_every_batch: tp.Optional[int] = None, early_stopping : bool = False , eval_every_epoch : tp.Optional[int] = None , save_loss : bool = False , *args, **kwargs) -> None:
+
+    def train(self, trainloader: DataLoader , valloader : tp.Optional[DataLoader] = None , 
+            epoch : int = 100, show_every_batch: tp.Optional[int] = None, restart: bool = False ,
+            early_stopping : bool = False , eval_every_epoch : tp.Optional[int] = None 
+            ,save_loss : bool = False ,  *args, **kwargs) -> None:
         """
         Train the model using the provided data loader(s).
 
@@ -150,6 +154,12 @@ class NNtrainer(BaseTrainer):
         # Set model to training mode
         self.model.train()
         
+        # Restart Training 
+        if restart:
+            logger.debug('Restart flag passed to train! reinitilizing weights using xavier normal and bias to zero')
+            self.cycle = 1
+            self.model.apply(self._weight_init)
+
 
         logger.info(f'--------------START OF  {self.cycle} TRAINING CYCLE---------------------')
         
@@ -172,6 +182,13 @@ class NNtrainer(BaseTrainer):
 
         
         for epoch in tqdm(range(1, epoch + 1), desc='Epoch', colour='blue', ncols=80 , position=0):        
+            # Set running loss to zero
+            running_loss = 0
+
+            # Trigger LR Scheduler 
+            if self.scheduler is not None:
+                self.scheduler.step()
+
             for idx, (feature, lable)  in enumerate(trainloader):
                 # Move to device
                 feature = feature.to(self.device)
@@ -185,22 +202,26 @@ class NNtrainer(BaseTrainer):
                 # Log the batch log 
                 if show_every_batch is not None:
                     if epoch % show_every_batch == 0:
-                        logger.info(f'Epoch {epoch}, Batch: {idx}, Loss: {loss.item():.3f}...')
+                        logger.info(f'Epoch {epoch}, Batch: {idx}, Loss: {loss.data.item():.3f}...')
                 
-                if self.best > loss.item():
-                    self.best = loss.data.item()
+
+                running_loss += loss.data.item()
             
+            # Record best loss
+            if self.best > running_loss:
+                    self.best = running_loss
+
             
-            logger.info(f'Finished epoch {epoch}. Loss: {loss.data.item()}...')
+            logger.info(f'Finished epoch {epoch}. Loss: {running_loss:.3f}...')
 
             # Append Loss
             if hasattr(self , 'epoch_loss'):
-                self.epoch_loss.append(loss.data.item())
+                self.epoch_loss.append(running_loss)
             
             # Evaluate on valid set 
             if eval_every_epoch is not None and valloader is not None and save_loss:
                 if epoch % eval_every_epoch == 0:
-                    self.epoch_val_loss.append(self.validate(valloader)/valloader.batch_size)
+                    self.epoch_val_loss.append(self.validate(valloader))
 
 
             # Use Early Stopping if provided 
@@ -208,7 +229,8 @@ class NNtrainer(BaseTrainer):
                 if  self.best > start_loss:
                     logger.info(f'Training stopped early due to no improvement in loss.')
                     break
-        
+            
+            
 
         logger.info(f'--------------END OF  {self.cycle} TRAINING CYCLE---------------------')
         
@@ -219,7 +241,7 @@ class NNtrainer(BaseTrainer):
 
 
 
-    def validate(self ,valloader : DataLoader ,  *args, **kwargs):
+    def validate(self ,valloader : DataLoader ,  *args, **kwargs) -> float:
         """
         Validate the model using the provided data loader.
 
@@ -314,3 +336,36 @@ class NNtrainer(BaseTrainer):
         
         plt.show()
 
+
+    def predict(self, X: torch.tensor) -> torch.tensor:
+        """
+        Predicts the output for the input tensor using the trained model.
+
+        Args:
+            X (torch.tensor): The input tensor for prediction.
+
+        Returns:
+            torch.tensor: The predicted output tensor.
+
+        Note:
+            The model needs to be in evaluation mode (self.model.eval()) before making predictions.
+            The input tensor X should be moved to the appropriate device (self.device) before prediction.
+
+        Example:
+            >>> input_tensor = torch.tensor([[1, 2, 3], [4, 5, 6]])
+            >>> model = MyModel()
+            >>> model.load_state_dict(torch.load("model_weights.pth"))
+            >>> output = model.predict(input_tensor)
+        """
+
+        # Set to evaluation 
+        self.model.eval()
+
+        with torch.no_grad():
+            X = X.to(self.device)
+            out = self.model(X).cpu()
+        
+        # Reset to train mode 
+        self.model.train() 
+
+        return out

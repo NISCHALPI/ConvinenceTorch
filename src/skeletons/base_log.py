@@ -1,6 +1,7 @@
 import logging
 import typing as tp
 import sys
+import os
 
 __all__ = ['configure_logging', 'get_logger']
 
@@ -11,8 +12,16 @@ def configure_logging():
     This function sets up the basic configuration for the logging module. It configures the log format, log level,
     and a stream handler to print log messages to the standard output (stdout).
     """
+    # Default level
+    level = 40 # ERROR LEVEL
+    
+    # Get level from environment if present
+    if os.getenv('LOG') is not None:
+        level = int(os.getenv('LOG'))
+    
+    
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(filename)s - %(message)s',
-                        level=logging.ERROR,
+                        level=level,
                         handlers=[logging.StreamHandler(sys.stdout)])
 
 def get_logger(name: str) -> logging.Logger:

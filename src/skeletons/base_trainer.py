@@ -7,7 +7,7 @@ from .base_log import get_logger
 logger = get_logger('base_trainer')
 
 
-__all_= ['BaseTrainer']
+__all__= ['BaseTrainer']
 
 class BaseTrainer(ABC):
     """Base class for trainers in PyTorch.
@@ -43,16 +43,14 @@ class BaseTrainer(ABC):
         #Loss 
         self.loss = loss
         
-        # PREFER GPU:0 IF AVAILABLE
+        # Set Device
         self._device : tp.Optional[torch.device]  = None
-
-        
-        
         super().__init__()
 
     def _move_to_device(self) -> None:
         
         if self._device is None:
+            logger.debug(f'Checking if CUDA device is available ? : {torch.cuda.get_device_name(0) if  torch.cuda.is_available() else "Not Available"} ')
             self.device =  torch.device("cuda:0") if torch.cuda.is_available() else torch.device('cpu') 
         
         logger.debug(msg='Moving model to device and linking it to optimizer')
@@ -96,4 +94,33 @@ class BaseTrainer(ABC):
     def validate(self, *args , **kwargs):
         pass    
 
-    
+
+    def _weight_init(self, model: torch.nn.Module) -> None:
+        """Initialize the weights of linear and convolutional layers using Xavier initialization.
+
+        Args:
+            model (torch.nn.Module): The PyTorch model for weight initialization.
+
+        Returns:
+            None
+
+        Summary:
+            This function initializes the weights of linear and convolutional layers in the provided PyTorch model
+            using Xavier initialization. It applies the initialization to each relevant submodule in a recursive manner.
+
+            Xavier initialization sets the weights according to a normal distribution with zero mean and variance
+            calculated based on the number of input and output connections of the layer. The bias is initialized to zero
+            using a uniform distribution.
+
+            Note: This function modifies the weights of the model in-place.
+
+        """
+        if isinstance(model, torch.nn.Linear) or isinstance(model, torch.nn.Conv2d):
+            
+            logger.debug(f'Applying xavier normal weight init to Model: {model._get_name()}, ObjID: {id(model)}')
+            torch.nn.init.xavier_normal_(model.weight.data)
+            
+            if model.bias is not None:
+                torch.nn.init.zeros_(model.bias)
+        return
+
