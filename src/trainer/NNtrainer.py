@@ -3,6 +3,8 @@ import torch
 from ..skeletons import get_logger, BaseTrainer
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt 
+from tqdm import tqdm
+
 
 logger = get_logger('NNtrainer')
 
@@ -56,7 +58,7 @@ class NNtrainer(BaseTrainer):
         Return the training and validation loss (if available).
     """
 
-    def __init__(self, model: torch.nn.Module, optimizer: torch.optim.Optimizer, loss: torch.nn.Module, seed : tp.Optional[float] = None, lr_scheduler : tp.Optional[torch.optim.lr_scheduler.LRScheduler] = None) -> None: 
+    def __init__(self, model: torch.nn.Module, optimizer: torch.optim.Optimizer, loss: torch.nn.Module, seed : tp.Optional[float] = None, device : tp.Optional[torch.device] = None ,lr_scheduler : tp.Optional[torch.optim.lr_scheduler.LRScheduler] = None) -> None: 
         
         # Initlize
         super().__init__(model, optimizer, loss)
@@ -70,6 +72,12 @@ class NNtrainer(BaseTrainer):
         # set lr scheduler 
         self.scheduler  = lr_scheduler
         self._check_optimizer_lr_link()
+
+        # set device 
+        if device is not None:
+            self.device = device
+        # Moves model to device : default is cuda
+        self._move_to_device()
 
         # Training Cycles
         self.cycle : int = 1 
@@ -138,8 +146,11 @@ class NNtrainer(BaseTrainer):
         - If a validation data loader (`valloader`) is provided, the model can be evaluated on the validation set at specified intervals.
         - If `save_loss` is set to True, the training and validation loss can be saved for further analysis.
         """
-       
+
+        # Set model to training mode
+        self.model.train()
         
+
         logger.info(f'--------------START OF  {self.cycle} TRAINING CYCLE---------------------')
         
         # Start Best Loss
@@ -157,10 +168,10 @@ class NNtrainer(BaseTrainer):
                 setattr(self, 'epoch_val_loss', None)
                 self.epoch_val_loss = []
 
+        
 
         
-        for epoch in range(1, epoch + 1):
-            
+        for epoch in tqdm(range(1, epoch + 1), desc='Epoch', colour='blue', ncols=80 , position=0):        
             for idx, (feature, lable)  in enumerate(trainloader):
                 # Move to device
                 feature = feature.to(self.device)
@@ -273,10 +284,7 @@ class NNtrainer(BaseTrainer):
         
         return None
     
-    import matplotlib.pyplot as plt
-
-    import matplotlib.pyplot as plt
-
+    
     def plot_train_validation_error_curve(self) -> None:
         """
         Plot the training and validation error curves.

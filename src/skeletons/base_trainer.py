@@ -42,15 +42,19 @@ class BaseTrainer(ABC):
         self.optimizer =  optimizer
         #Loss 
         self.loss = loss
-        # PREFER GPU:0 IF AVAILABLE
-        self._device : torch.device  = torch.device("cuda:0") if torch.cuda.is_available() else torch.device('cpu')
         
-        # Move model to device
-        self._move_to_device()
+        # PREFER GPU:0 IF AVAILABLE
+        self._device : tp.Optional[torch.device]  = None
+
+        
         
         super().__init__()
 
     def _move_to_device(self) -> None:
+        
+        if self._device is None:
+            self.device =  torch.device("cuda:0") if torch.cuda.is_available() else torch.device('cpu') 
+        
         logger.debug(msg='Moving model to device and linking it to optimizer')
         self.model = self.model.to(device=self.device)
         return

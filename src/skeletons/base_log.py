@@ -12,7 +12,7 @@ def configure_logging():
     and a stream handler to print log messages to the standard output (stdout).
     """
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(filename)s - %(message)s',
-                        level=logging.INFO,
+                        level=logging.ERROR,
                         handlers=[logging.StreamHandler(sys.stdout)])
 
 def get_logger(name: str) -> logging.Logger:
