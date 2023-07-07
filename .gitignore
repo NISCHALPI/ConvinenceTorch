@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 
 notebooks/
-
+data/
 # C extensions
 *.so
 
@@ -81,6 +81,7 @@ target/
 .ipynb_checkpoints
 *.ipynb
 
+*.bin
 
 # IPython
 profile_default/
