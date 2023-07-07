@@ -80,7 +80,7 @@ class NNtrainer(BaseTrainer):
         self._move_to_device()
 
         # Training Cycles
-        self.cycle : int = 1 
+        self.cycle : int = 0 
 
     def _check_optimizer_model_link(self) -> None:
         """
@@ -153,11 +153,16 @@ class NNtrainer(BaseTrainer):
 
         # Set model to training mode
         self.model.train()
+
+        #Initilize Weights using Xaviers Uniform Weight init 
+        if self.cycle == 0:
+            self._weight_init(self.model)
+
         
         # Restart Training 
         if restart:
             logger.debug('Restart flag passed to train! reinitilizing weights using xavier normal and bias to zero')
-            self.cycle = 1
+            self.cycle = 0
             self.model.apply(self._weight_init)
 
 
@@ -208,7 +213,7 @@ class NNtrainer(BaseTrainer):
                 running_loss += loss.data.item()
             
             # Record best loss
-            if self.best > running_loss:
+            if  running_loss < self.best:
                     self.best = running_loss
 
             

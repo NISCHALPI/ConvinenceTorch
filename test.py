@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
-from src.trainer import NNtrainer  # Replace 'your_module' with the actual module name where NNtrainer is defined
+from src.trainer import NNtrainer  
 
 # Create a mock model, optimizer, and loss function for testing
 class MockModel(torch.nn.Module):

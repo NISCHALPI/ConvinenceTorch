@@ -12,16 +12,11 @@ def configure_logging():
     This function sets up the basic configuration for the logging module. It configures the log format, log level,
     and a stream handler to print log messages to the standard output (stdout).
     """
-    # Default level
-    level = 40 # ERROR LEVEL
-    
-    # Get level from environment if present
-    if os.getenv('LOG') is not None:
-        level = int(os.getenv('LOG'))
+   
     
     
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(filename)s - %(message)s',
-                        level=level,
+                        level=logging.WARNING,
                         handlers=[logging.StreamHandler(sys.stdout)])
 
 def get_logger(name: str) -> logging.Logger:
@@ -34,4 +29,16 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         logging.Logger: A logger instance with the specified name.
     """
-    return logging.getLogger(name=name)
+
+    # Default level
+    level = 40 # ERROR LEVEL
+    
+    # Get level from environment if present
+    if os.getenv('LOG') is not None:
+        level = int(os.getenv('LOG'))
+
+    logger = logging.getLogger(name=name)
+
+    logger.setLevel(level=level)
+    
+    return logger
