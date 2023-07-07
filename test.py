@@ -30,11 +30,11 @@ val_loader = DataLoader(val_dataset, batch_size=5, shuffle=False)
 trainer = NNtrainer(model, optimizer, loss_fn)
 
 # Test the train method
-trainer.train(train_loader, val_loader, epoch=200, show_every_batch=2, early_stopping=True, eval_every_epoch=1, save_loss=True)
+trainer.train(train_loader, val_loader, epoch=200, show_every_batch=2, early_stopping=True, eval_every_epoch=1, record_loss=True)
 
 # Test the validate method
 val_loss = trainer.validate(val_loader)
 print("Validation Loss:", val_loss)
 
 # Test the get_loss method
-trainer.plot_train_validation_error_curve()
+trainer.plot_train_validation_metric_curve()
