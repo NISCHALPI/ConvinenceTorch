@@ -16,57 +16,90 @@ __all__= ['NNtrainer']
 
 class NNtrainer(BaseTrainer):
     """
-    Neural Network Trainer class that extends the BaseTrainer.
+    A trainer class for neural networks.
 
     Parameters
     ----------
     model : torch.nn.Module
-        The model to be trained.
+        The neural network model.
     optimizer : torch.optim.Optimizer
-        The optimizer for updating model parameters.
+        The optimizer for model parameters.
     loss : torch.nn.Module
-        The loss function to compute the training loss.
+        The loss function.
     seed : float, optional
-        Seed for random number generation. Default is None.
+        The seed value. Defaults to None.
+    device : torch.device, optional
+        The device to run the model on. Defaults to None.
     lr_scheduler : torch.optim.lr_scheduler.LRScheduler, optional
-        Learning rate scheduler. Default is None.
+        The learning rate scheduler. Defaults to None.
 
     Attributes
     ----------
-    model : torch.nn.Module
-        The model to be trained.
-    optimizer : torch.optim.Optimizer
-        The optimizer for updating model parameters.
-    loss : torch.nn.Module
-        The loss function to compute the training loss.
-    seed : float, optional
-        Seed for random number generation.
-    best : torch.Tensor
+    available_metric : dict
+        A dictionary of available evaluation metrics.
+    best : float
         The best loss achieved during training.
-    scheduler : torch.optim.lr_scheduler.LRScheduler, optional
-        Learning rate scheduler.
+    scheduler : torch.optim.lr_scheduler.LRScheduler
+        The learning rate scheduler.
+    device : torch.device
+        The device to run the model on.
     cycle : int
-        Training cycle number.
+        The training cycle number.
 
     Methods
     -------
-    train(trainloader, valloader=None, epoch=100, show_every_batch=None, early_stopping=False,
-          eval_every_epoch=None, record_loss=False, *args, **kwargs)
-        Train the model using the provided data loader(s).
-    validate(valloader, *args, **kwargs)
-        Validate the model using the provided data loader.
-    get_loss() -> tp.Union[tp.Tuple[list, list], list, None]
-        Return the training and validation loss (if available).
+    train(trainloader, valloader=None, epoch=100, log_every_batch=None, restart=False, early_stopping=False,
+          validate_every_epoch=None, record_loss=True, metrics=None, *args, **kwargs)
+        Trains the model.
+    validate(valloader, metrics=None, *args, **kwargs)
+        Validates the model on a validation set.
+    get_loss()
+        Returns the training loss.
+    plot_train_validation_metric_curve(metric='primary')
+        Plots the training and validation metric curves.
+    predict(X)
+        Makes predictions using the trained model.
+
+    Notes
+    -----
+    This trainer assumes a classification task with multiple classes.
     """
-    available_metric = {'accuracy' : met.accuracy_score , 
-            'f1' : met.f1_score , 'roc' : met.roc_auc_score , 
-            'L1' : met.mean_absolute_error, 'precision':met.precision_score, 
-            'recall' : met.recall_score}
+    
+    # Metrics 
+    available_metric = {
+        'accuracy' : met.accuracy_score , 
+        'f1' : met.f1_score , 
+        'roc' : met.roc_auc_score , 
+        'L1' : met.mean_absolute_error,
+        'precision':met.precision_score, 
+        'recall' : met.recall_score
+        }
+
+
 
     def __init__(self, model: torch.nn.Module, optimizer: torch.optim.Optimizer, loss: torch.nn.Module, seed : 
                  tp.Optional[float] = None, device : tp.Optional[torch.device] = None ,
                  lr_scheduler : tp.Optional[torch.optim.lr_scheduler.LRScheduler] = None) -> None: 
-        
+        """
+        Initializes the NNtrainer.
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The neural network model.
+        optimizer : torch.optim.Optimizer
+            The optimizer for model parameters.
+        loss : torch.nn.Module
+            The loss function.
+        seed : float, optional
+            The seed value. Defaults to None.
+        device : torch.device, optional
+            The device to run the model on. Defaults to None.
+        lr_scheduler : torch.optim.lr_scheduler.LRScheduler, optional
+            The learning rate scheduler. Defaults to None.
+        """
+
+
         # Initlize
         super().__init__(model, optimizer, loss)
         
@@ -88,6 +121,7 @@ class NNtrainer(BaseTrainer):
 
         # Training Cycles
         self.cycle : int = 0 
+
 
     def _check_optimizer_model_link(self) -> None:
         """
@@ -114,48 +148,36 @@ class NNtrainer(BaseTrainer):
 
 
     def train(self, trainloader: DataLoader , valloader : tp.Optional[DataLoader] = None , 
-            epoch : int = 100, show_every_batch: tp.Optional[int] = None, restart: bool = False ,
-            early_stopping : bool = False , eval_every_epoch : tp.Optional[int] = None 
-            ,record_loss : bool = False , metrics : tp.Optional[tp.Union[tp.Iterable[str], str]] = None,  *args, **kwargs) -> None:
+            epoch : int = 100, log_every_batch: tp.Optional[int] = None, restart: bool = False ,
+            early_stopping : bool = False , validate_every_epoch : tp.Optional[int] = None 
+            ,record_loss : bool = True , metrics : tp.Optional[tp.Union[tp.Iterable[str], str]] = None,  *args, **kwargs) -> None:
         """
-        Train the model using the provided data loader(s).
+        Trains the model.
 
         Parameters
         ----------
         trainloader : DataLoader
-            The data loader for the training data.
-        valloader : Optional[DataLoader], optional
-            The data loader for the validation data. Default is None.
+            The data loader for the training set.
+        valloader : DataLoader, optional
+            The data loader for the validation set. Defaults to None.
         epoch : int, optional
-            The number of training epochs. Default is 100.
-        show_every_batch : Optional[int], optional
-            Log the training loss every `show_every_batch` batches. Default is None.
+            The number of epochs to train. Defaults to 100.
+        log_every_batch : int, optional
+            Log the training loss every specified number of batches. Defaults to None.
+        restart : bool, optional
+            Restart training from the beginning. Defaults to False.
         early_stopping : bool, optional
-            Enable early stopping if the loss does not improve. Default is False.
-        eval_every_epoch : Optional[int], optional
-            Evaluate the model on the validation set every `eval_every_epoch` epochs. Default is None.
+            Stop training early if no improvement in loss. Defaults to False.
+        validate_every_epoch : int, optional
+            Perform validation every specified number of epochs. Defaults to None.
         record_loss : bool, optional
-            Save the training and validation loss. Default is False.
-        *args, **kwargs
-            Additional arguments to be passed to the training loop.
-
-        Returns
-        -------
-        None
-
-        Raises
-        ------
-        RuntimeError
-            If the optimizer is not linked with the model parameters.
-
-        Notes
-        -----
-        - The training loop iterates over the specified number of epochs.
-        - During each epoch, the model is trained on the batches provided by the `trainloader`.
-        - The loss is computed, gradients are backpropagated, and model parameters are updated using the optimizer.
-        - Optionally, the training loss can be logged, and early stopping can be applied if specified.
-        - If a validation data loader (`valloader`) is provided, the model can be evaluated on the validation set at specified intervals.
-        - If `record_loss` is set to True, the training and validation loss can be saved for further analysis.
+            Record the training and validation loss. Defaults to True.
+        metrics : Union[Iterable[str], str], optional
+            Evaluation metrics to calculate. Defaults to None.
+        *args
+            Additional positional arguments.
+        **kwargs
+            Additional keyword arguments.
         """
 
         
@@ -204,7 +226,7 @@ class NNtrainer(BaseTrainer):
                     self.records['train'][metric] = []
             
             # Set primary validation loss
-            if eval_every_epoch is not None and valloader is not None:
+            if validate_every_epoch is not None and valloader is not None:
                 logger.debug(f'Recording primary validation loss for NNTrainer : OBJID {id(self)}')
                 self.records['validation'] = {}
                 self.records['validation']['primary'] = []
@@ -248,8 +270,8 @@ class NNtrainer(BaseTrainer):
                     self._record_running_metric(fp, lable, additional_running_loss)
                 
                 # Log the batch log 
-                if show_every_batch is not None:
-                    if epoch % show_every_batch == 0:
+                if log_every_batch is not None:
+                    if epoch % log_every_batch == 0:
                         logger.info(f'Epoch {epoch}, Batch: {idx}, Loss: {loss.data.item():.3f}...')
                 
 
@@ -275,8 +297,8 @@ class NNtrainer(BaseTrainer):
             
 
             # Evaluate on valid set 
-            if eval_every_epoch is not None and valloader is not None and record_loss:
-                if epoch % eval_every_epoch == 0:
+            if validate_every_epoch is not None and valloader is not None and record_loss:
+                if epoch % validate_every_epoch == 0:
                     self.records['validation']['primary'].append(self.validate(valloader, metrics))
 
 
@@ -299,27 +321,24 @@ class NNtrainer(BaseTrainer):
 
     def validate(self ,valloader : DataLoader , metrics : list = None , *args, **kwargs) -> float:
         """
-        Validate the model using the provided data loader.
+        Validates the model on a validation set.
 
         Parameters
         ----------
-        valloader : Optional[DataLoader]
-            The data loader for the validation data. Default is None.
-        *args, **kwargs
-            Additional arguments to be passed for validation.
+        valloader : DataLoader
+            The data loader for the validation set.
+        metrics : Union[Iterable[str], str], optional
+            Evaluation metrics to calculate. Defaults to None.
+        *args
+            Additional positional arguments.
+        **kwargs
+            Additional keyword arguments.
 
         Returns
         -------
         float
             The validation loss.
-
-        Notes
-        -----
-        - The model is switched to evaluation mode during the validation process.
-        - The validation loss is computed for each batch in the validation data.
-        - The total validation loss is returned.
         """
-        
         # Set to eval
         self.model.eval()
         logger.debug(f'Setting model to eval for OBID = {id(self)}')
@@ -356,19 +375,12 @@ class NNtrainer(BaseTrainer):
 
     def get_loss(self) -> tp.Union[dict , None]:
         """
-        Get the training and validation loss (if available).
+        Returns the training loss.
 
         Returns
         -------
-        Union[Tuple[List, List], List, None]
-            - If both training and validation loss are available:
-                - A tuple containing two lists: the training loss and the validation loss.
-            - If only training loss is available:
-                - A list containing the training loss.
-            - If only validation loss is available:
-                - A list containing the validation loss.
-            - If neither training nor validation loss is available:
-                - None.
+        Union[dict, None]
+            The training loss as a dictionary if available, None otherwise.
         """
         if hasattr(self, 'records'):
             return self.records
@@ -378,11 +390,12 @@ class NNtrainer(BaseTrainer):
     
     def plot_train_validation_metric_curve(self , metric : str = 'primary') -> None:
         """
-        Plot the training and validation error curves.
+        Plots the training and validation metric curves.
 
-        Returns
-        -------
-        None
+        Parameters
+        ----------
+        metric : str, optional
+            The metric to plot. Defaults to 'primary'.
         """
         plt.figure(figsize=(10, 8))
         plt.grid(visible=True, which='both', axis='both')
@@ -408,23 +421,17 @@ class NNtrainer(BaseTrainer):
 
     def predict(self, X: torch.tensor) -> torch.tensor:
         """
-        Predicts the output for the input tensor using the trained model.
+        Makes predictions using the trained model.
 
-        Args:
-            X (torch.tensor): The input tensor for prediction.
+        Parameters
+        ----------
+        X : torch.tensor
+            The input tensor for making predictions.
 
-        Returns:
-            torch.tensor: The predicted output tensor.
-
-        Note:
-            The model needs to be in evaluation mode (self.model.eval()) before making predictions.
-            The input tensor X should be moved to the appropriate device (self.device) before prediction.
-
-        Example:
-            >>> input_tensor = torch.tensor([[1, 2, 3], [4, 5, 6]])
-            >>> model = MyModel()
-            >>> model.load_state_dict(torch.load("model_weights.pth"))
-            >>> output = model.predict(input_tensor)
+        Returns
+        -------
+        torch.tensor
+            The predicted tensor.
         """
 
         # Set to evaluation
@@ -443,14 +450,34 @@ class NNtrainer(BaseTrainer):
 
 
     def _record_running_metric(self,  y_pred : torch.Tensor , y_true : torch.Tensor, running_dict: dict) -> None:
-        
+        """
+        Records the running metric during training.
+
+        Parameters
+        ----------
+        y_pred : torch.Tensor
+            The predicted tensor.
+        y_true : torch.Tensor
+            The true tensor.
+        running_dict : dict
+            The dictionary to store the running metric values.
+        """
         for metric in running_dict.keys():
             running_dict[metric].append(self._eval_metric(y_pred=y_pred, y_true=y_true, metric=metric))
         
         return
 
     def _collect_running_metric(self, running_dict : dict, what: bool = True):
-        
+        """
+        Collects the running metric during training.
+
+        Parameters
+        ----------
+        running_dict : dict
+            The dictionary containing the running metric values.
+        what : bool, optional
+            Specifies whether to collect the metric for training or validation. Defaults to True.
+        """
         key = 'train' if what else 'validation'
         
         for metric in running_dict.keys():
@@ -459,7 +486,23 @@ class NNtrainer(BaseTrainer):
         return
 
     def _eval_metric(self, y_pred : torch.Tensor , y_true : torch.Tensor, metric : str) -> float:
-         
+        """
+        Evaluates the metric between predicted and true tensors.
+
+        Parameters
+        ----------
+        y_pred : torch.Tensor
+            The predicted tensor.
+        y_true : torch.Tensor
+            The true tensor.
+        metric : str
+            The metric to evaluate.
+
+        Returns
+        -------
+        float
+            The evaluated metric value.
+        """
 
         # Move to CPU and Record
         y_pred_cpu = y_pred.data.cpu()
@@ -476,6 +519,20 @@ class NNtrainer(BaseTrainer):
         return self.available_metric[metric](y_true_cpu, y_pred_cpu)
     
     def _check_metric(self, metric : str) -> bool:
+        """
+        Checks if the given metric is available.
+
+        Parameters
+        ----------
+        metric : str
+            The metric to check.
+
+        Returns
+        -------
+        bool
+            True if the metric is available, False otherwise.
+        """
+        
         if metric in self.available_metric.keys():
             return True
         
