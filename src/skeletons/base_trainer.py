@@ -91,7 +91,7 @@ class BaseTrainer(ABC):
         pass
     
     @abstractmethod
-    def validate(self, *args , **kwargs):
+    def _validate(self, *args , **kwargs):
         pass    
 
 

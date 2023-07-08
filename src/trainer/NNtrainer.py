@@ -1,11 +1,10 @@
 import typing as tp
 import torch
-from ..skeletons import get_logger, BaseTrainer
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt 
 from tqdm import tqdm
-import sklearn.metrics as met
-import numpy as np
+from ..skeletons import get_logger, BaseTrainer
+from ..skeletons import Register
 
 logger = get_logger('NNtrainer')
 
@@ -65,16 +64,6 @@ class NNtrainer(BaseTrainer):
     This trainer assumes a classification task with multiple classes.
     """
     
-    # Metrics 
-    available_metric = {
-        'accuracy' : met.accuracy_score , 
-        'f1' : met.f1_score , 
-        'roc' : met.roc_auc_score , 
-        'L1' : met.mean_absolute_error,
-        'precision':met.precision_score, 
-        'recall' : met.recall_score
-        }
-
 
 
     def __init__(self, model: torch.nn.Module, optimizer: torch.optim.Optimizer, loss: torch.nn.Module, seed : 
@@ -107,8 +96,7 @@ class NNtrainer(BaseTrainer):
         self._check_optimizer_model_link()
         # Get the seed 
         self.seed= seed 
-        # set best loss
-        self.best : float = torch.inf    
+        
         # set lr scheduler 
         self.scheduler  = lr_scheduler
         self._check_optimizer_lr_link()
@@ -119,6 +107,7 @@ class NNtrainer(BaseTrainer):
         # Moves model to device : default is cuda
         self._move_to_device()
 
+        
         # Training Cycles
         self.cycle : int = 0 
 
@@ -146,11 +135,11 @@ class NNtrainer(BaseTrainer):
             logger.debug(msg="No lrscheduler is passed in the NNtrainer")
 
 
-
     def train(self, trainloader: DataLoader , valloader : tp.Optional[DataLoader] = None , 
             epoch : int = 100, log_every_batch: tp.Optional[int] = None, restart: bool = False ,
-            early_stopping : bool = False , validate_every_epoch : tp.Optional[int] = None 
-            ,record_loss : bool = True , metrics : tp.Optional[tp.Union[tp.Iterable[str], str]] = None,  *args, **kwargs) -> None:
+            validate_every_epoch : int = 1 ,record_loss : bool = True ,
+            metrics : tp.Optional[tp.Union[tp.Iterable[str], str]] = None,  *args, **kwargs) -> None:
+        
         """
         Trains the model.
 
@@ -180,16 +169,21 @@ class NNtrainer(BaseTrainer):
             Additional keyword arguments.
         """
 
+
         
         # Set model to training mode
         self.model.train()
         logger.debug(f'Setting model to train for OBID = {id(self)}')
 
+
+
         #Initilize Weights using Xaviers Uniform Weight init 
         if self.cycle == 0:
             self._weight_init(self.model)
 
-        
+
+
+
         # Restart Training 
         if restart:
             logger.debug('Restart flag passed to train! reinitilizing weights using xavier normal and bias to zero')
@@ -197,59 +191,27 @@ class NNtrainer(BaseTrainer):
             self.model.apply(self._weight_init)
 
 
-        logger.info(f'--------------START OF  {self.cycle} TRAINING CYCLE---------------------')
-        
-        # Start Best Loss
-        start_loss = self.best
 
+        # If instantiate the register if record loss at the start
+        if record_loss:
+            setattr(self, 'register', Register(metrics=metrics, loss=self.loss, epoch=epoch ,cycle= self.cycle + 1))
+
+        # If not, remove previous if present
+        else:
+            if hasattr(self, 'register'):
+                delattr(self, 'register')
+
+
+        # Start the training 
+        logger.info(f'--------------START OF  {self.cycle + 1} TRAINING CYCLE---------------------')
+       
         # if passed seed
         if self.seed:
             torch.manual_seed(self.seed)
-        
-        # Loss saving attribiutes setup
-        if record_loss and self.cycle == 0:
-            logger.debug(f'Recording primary traning loss for NNTrainer : OBJID {id(self)}')
-            setattr(self, 'records', {})
-            # Set primary train loss 
-            self.records['train'] = {}
-            self.records['train']['primary'] = []
+              
 
-           
-            if metrics is not None: 
-                if isinstance(metrics , str):
-                    metrics = [metrics]
-
-                # Filter metric 
-                metrics = list(filter(self._check_metric, metrics))
-                
-                for metric in metrics:
-                    self.records['train'][metric] = []
+        for e in tqdm(range(1, epoch + 1), desc=f'Train Cycle: {self.cycle + 1} , Epoch', colour='blue', ncols=80 , position=0):        
             
-            # Set primary validation loss
-            if validate_every_epoch is not None and valloader is not None:
-                logger.debug(f'Recording primary validation loss for NNTrainer : OBJID {id(self)}')
-                self.records['validation'] = {}
-                self.records['validation']['primary'] = []
-
-                if metrics is not None:
-                    for metric in metrics:
-                            self.records['validation'][metric] = []
-            
-        
-        
-        for epoch in tqdm(range(1, epoch + 1), desc='Epoch', colour='blue', ncols=80 , position=0):        
-            
-            # Set running loss to zero
-            running_loss = 0
-            
-
-            # running additional metric
-            additional_running_loss = {}
-            
-            if metrics is not None and record_loss:
-                additional_running_loss = {name : [] for name in metrics}
-            
-
             # Trigger LR Scheduler 
             if self.scheduler is not None:
                 self.scheduler.step()
@@ -264,51 +226,29 @@ class NNtrainer(BaseTrainer):
                 loss.backward()
                 self.optimizer.step()
                 
-
-                #Record training additional metrics 
-                if record_loss and metrics is not None:
-                    self._record_running_metric(fp, lable, additional_running_loss)
-                
                 # Log the batch log 
                 if log_every_batch is not None:
-                    if epoch % log_every_batch == 0:
-                        logger.info(f'Epoch {epoch}, Batch: {idx}, Loss: {loss.data.item():.3f}...')
-                
+                    if e % log_every_batch == 0:
+                        logger.info(f'Epoch {e}, Batch: {idx}, Loss: {loss.data.item():.3f}...')
 
-                running_loss += loss.data.item()
+                # Register the metrics 
+                if record_loss:
+                    self.register : Register
+                    self.register._record(y_pred=fp, y_true=lable, epoch=e, where=True)
             
 
-            # Record best loss
-            if  running_loss < self.best:
-                    self.best = running_loss
-            
-            # Collect Running loss for training
-            if record_loss and metrics is not None:
-                self._collect_running_metric(additional_running_loss)
-            
-            # Log 
-            logger.info(f'Finished epoch {epoch}. Loss: {running_loss:.3f}...')
+            # Evaluate on validation set 
+            if validate_every_epoch != 0 and valloader is not None:
+                if record_loss:
+                    if e % validate_every_epoch == 0:
+                        self._validate(valloader=valloader, epoch=e)
+                else:
+                    raise ValueError('Validation Data Loader Passed but record_loss is False. No point in validataion. Pass record_loss = True explicitly')
+        
+        # Minimize the Register 
+        if record_loss:
+            self.register._minimize_per_epoch()
 
-
-            
-            # Append  Primary Loss
-            if hasattr(self , 'records'):
-                self.records['train']['primary'].append(running_loss)
-            
-
-            # Evaluate on valid set 
-            if validate_every_epoch is not None and valloader is not None and record_loss:
-                if epoch % validate_every_epoch == 0:
-                    self.records['validation']['primary'].append(self.validate(valloader, metrics))
-
-
-            # Use Early Stopping if provided 
-            if early_stopping:
-                if  self.best > start_loss:
-                    logger.info(f'Training stopped early due to no improvement in loss.')
-                    break
-            
-            
 
         logger.info(f'--------------END OF  {self.cycle} TRAINING CYCLE---------------------')
         
@@ -318,8 +258,7 @@ class NNtrainer(BaseTrainer):
         return
 
 
-
-    def validate(self ,valloader : DataLoader , metrics : list = None , *args, **kwargs) -> float:
+    def _validate(self ,valloader : DataLoader , epoch : tp.Optional[int] = None  , *args, **kwargs) -> float:
         """
         Validates the model on a validation set.
 
@@ -344,33 +283,21 @@ class NNtrainer(BaseTrainer):
         logger.debug(f'Setting model to eval for OBID = {id(self)}')
         
         with torch.no_grad(): 
-            loss = 0.
-
-            # Metric Definations
-            running_valid_metric = {}
-            if metrics is not None:
-                running_valid_metric = {name : [] for name in metrics}
-
-
+            loss = 0
             for feature, lable in valloader:
                 feature = feature.to(self.device)
                 lable = lable.to(self.device)
                 fp = self.model(feature)
                 loss += self.loss(fp, lable)
-                
-                # recored running metric
-                self._record_running_metric(fp, lable, running_dict=running_valid_metric)
-
             
-            # Collect avereges 
-            self._collect_running_metric(running_valid_metric, what=False)
-                
-                
+                if hasattr(self, 'register') and epoch is not None:
+                    self.register._record(y_pred=fp, y_true=lable, epoch=epoch, where=False)                
+    
+
         #Set to train 
         self.model.train()
         logger.debug(f'Setting model to train for OBID = {id(self)}')
-
-        return float(loss)
+        return loss
 
 
     def get_loss(self) -> tp.Union[dict , None]:
@@ -382,41 +309,26 @@ class NNtrainer(BaseTrainer):
         Union[dict, None]
             The training loss as a dictionary if available, None otherwise.
         """
-        if hasattr(self, 'records'):
-            return self.records
+        if hasattr(self, 'register'):
+            return self.register.records
     
         return None 
     
     
-    def plot_train_validation_metric_curve(self , metric : str = 'primary') -> None:
+    def plot_train_validation_metric_curve(self , metric : tp.Optional[str] = None) -> None:
         """
         Plots the training and validation metric curves.
 
         Parameters
         ----------
         metric : str, optional
-            The metric to plot. Defaults to 'primary'.
+            The metric to plot. Defaults to loss.
         """
-        plt.figure(figsize=(10, 8))
-        plt.grid(visible=True, which='both', axis='both')
+        if hasattr(self, 'register'):
+            self.register.plot_train_validation_metric_curve(metric=metric)
 
-        if hasattr(self, 'records') and metric in self.records['train'].keys():
-                
-            plt.plot(range(1, len(self.records['train'][metric]) + 1), self.records['train'][metric], color='red', linestyle='-', marker='o', markersize=5, label='Training Loss / Epoch', alpha=0.5)
-
-            if 'validation' in self.records.keys() and metric in self.records['validation'].keys():
-                plt.plot(range(1, len(self.records['validation'][metric]) + 1), self.records['validation'][metric], color='purple', alpha=0.5,linestyle='-', marker='s', markersize=5, label='Validation Loss / Epoch')
-
-        plt.xlabel('Epoch')
-        plt.ylabel(metric)
-        plt.title(f'Training and Validation {metric} Curves')
-        plt.legend()
-        plt.xticks(fontsize=10)
-        plt.yticks(fontsize=10)
-        plt.grid(linestyle='dotted', linewidth=0.5)
-        plt.tight_layout()
-        
-        plt.show()
+        else:
+            raise RuntimeError('Record Loss was not passed to train method. Metrics not Recorded!')
 
 
     def predict(self, X: torch.tensor) -> torch.tensor:
@@ -447,98 +359,4 @@ class NNtrainer(BaseTrainer):
         self.model.train() 
 
         return out
-
-
-    def _record_running_metric(self,  y_pred : torch.Tensor , y_true : torch.Tensor, running_dict: dict) -> None:
-        """
-        Records the running metric during training.
-
-        Parameters
-        ----------
-        y_pred : torch.Tensor
-            The predicted tensor.
-        y_true : torch.Tensor
-            The true tensor.
-        running_dict : dict
-            The dictionary to store the running metric values.
-        """
-        for metric in running_dict.keys():
-            running_dict[metric].append(self._eval_metric(y_pred=y_pred, y_true=y_true, metric=metric))
-        
-        return
-
-    def _collect_running_metric(self, running_dict : dict, what: bool = True):
-        """
-        Collects the running metric during training.
-
-        Parameters
-        ----------
-        running_dict : dict
-            The dictionary containing the running metric values.
-        what : bool, optional
-            Specifies whether to collect the metric for training or validation. Defaults to True.
-        """
-        key = 'train' if what else 'validation'
-        
-        for metric in running_dict.keys():
-            self.records[key][metric].append(sum(running_dict[metric])/len(running_dict[metric]))
-
-        return
-
-    def _eval_metric(self, y_pred : torch.Tensor , y_true : torch.Tensor, metric : str) -> float:
-        """
-        Evaluates the metric between predicted and true tensors.
-
-        Parameters
-        ----------
-        y_pred : torch.Tensor
-            The predicted tensor.
-        y_true : torch.Tensor
-            The true tensor.
-        metric : str
-            The metric to evaluate.
-
-        Returns
-        -------
-        float
-            The evaluated metric value.
-        """
-
-        # Move to CPU and Record
-        y_pred_cpu = y_pred.data.cpu()
-        y_true_cpu = y_true.data.cpu()
-
-        # Apply softmax if logits 
-        if isinstance(self.loss , (torch.nn.CrossEntropyLoss , )):
-            y_pred_cpu = torch.nn.functional.softmax(y_pred_cpu, dim=1).argmax(dim=1)
-        
-        y_pred_cpu = y_pred_cpu.numpy().ravel()
-        y_true_cpu   = y_true_cpu.numpy().ravel()
-
-
-        return self.available_metric[metric](y_true_cpu, y_pred_cpu)
-    
-    def _check_metric(self, metric : str) -> bool:
-        """
-        Checks if the given metric is available.
-
-        Parameters
-        ----------
-        metric : str
-            The metric to check.
-
-        Returns
-        -------
-        bool
-            True if the metric is available, False otherwise.
-        """
-        
-        if metric in self.available_metric.keys():
-            return True
-        
-        Warning(f'{metric} is not available')
-        
-        return False
-
-        
 
