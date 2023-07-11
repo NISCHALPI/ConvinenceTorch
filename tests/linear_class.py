@@ -55,8 +55,8 @@ optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 # In[7]:
 
 
-from src.torchutils.skeletons import Register
-from src.torchutils.trainer import NNtrainer
+from torchutils.skeletons import Register
+from torchutils.trainer import NNtrainer
 
 
 # In[8]:

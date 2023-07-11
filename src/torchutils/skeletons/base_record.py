@@ -1,9 +1,57 @@
+"""
+This script defines a Register class for recording and evaluating metrics during training.
+
+Register:
+==========
+    Class for recording and evaluating metrics during training.
+    
+    Parameters:
+    -----------
+        metrics (Union[List[str], str, None]): The metrics to record and evaluate. If None, only the loss metric is used.
+        loss (torch.nn.modules.loss._Loss): The loss function used in training.
+        epoch (int): The total number of training epochs.
+        cycle (Optional[int]): The cycle number (default: None).
+        multiclass_reduction_strategy (str): The strategy for reducing multiclass metrics (default: 'micro').
+    
+    Attributes:
+    -----------
+        available_metric (dict): Dictionary mapping metric names to metric functions.
+        records (dict): Dictionary storing the recorded metrics for each epoch and dataset split.
+        minimized_record (dict): Dictionary storing the mean value of recorded metrics per epoch and dataset split.
+    
+    Methods:
+    --------
+        _multi_classification_enable(func: Callable, avg: str) -> Callable: Decorator that enables multi-classification support for a given sklearn metric.
+        _init_multiclass() -> None: Wraps the multiclassification strategy.
+        _init_metrics(metrics: Union[List[str], str]) -> None: Initialize the metrics to be recorded and evaluated.
+        _key(epoch: int) -> str: Returns the key string for a given epoch.
+        _init_records() -> None: Initialize the records dictionary.
+        _check_metric(metric_name: str) -> bool: Checks if the given metric is available.
+        _eval_metric(y_pred: torch.Tensor, y_true: torch.Tensor, metric_name: str) -> float: Evaluates the metric between predicted and true tensors.
+        _record(y_pred: torch.Tensor, y_true: torch.Tensor, epoch: int, where: bool = True) -> None: Record the metrics for a given epoch and dataset split.
+        _minimize_per_epoch() -> None: Calculate the mean value of recorded metrics per epoch and dataset split.
+        plot_train_validation_metric_curve(metric: Optional[str] = None) -> None: Plots the training and validation metric curves.
+    
+    Properties:
+    -----------
+        records (dict): Get the records dictionary.
+        minimized_record (dict): Get the minimized_record dictionary.
+
+Note: For detailed documentation of the class methods, attributes, and properties, please refer to the docstrings within the code.
+"""
+
+
+
+
+
+
+
 from statistics import mean
 import sklearn.metrics as met 
 import  torch 
 import typing as tp
 import matplotlib.pyplot as plt
-
+import functools
 
 
 
@@ -67,21 +115,26 @@ class Register(object):
     minimized_record : dict
         Get the minimized_record dictionary.
     """
+    
+    
 
 
     # Available metrics metric System
     available_metric = {
         'accuracy' : met.accuracy_score , 
         'f1' : met.f1_score , 
-        'roc' : met.roc_auc_score , 
+        'auc' : met.roc_auc_score ,
         'L1' : met.mean_absolute_error,
-        'precision':met.precision_score, 
+        'precision': met.precision_score ,
         'recall' : met.recall_score
         }
 
 
 
-    def __init__(self, metrics : tp.Union[tp.List[str], str, None] , loss: torch.nn.modules.loss._Loss , epoch : int, cycle : tp.Optional[int] = None) -> None:
+    def __init__(self, metrics : tp.Union[tp.List[str], str, None] ,
+                loss: torch.nn.modules.loss._Loss ,
+                epoch : int, cycle : tp.Optional[int] = None, 
+                multiclass_reduction_strategy : str = 'micro' ) -> None:
         """
         Initialize a Register object.
 
@@ -98,7 +151,13 @@ class Register(object):
         
         self._metrics = None
         self._loss = loss
+        # Set loss to available metric dict
         self.available_metric[loss._get_name()]= loss
+        # Set multiclass reduction strategy
+        self.multiclass_strategy = multiclass_reduction_strategy
+        self._init_multiclass()
+        
+
         self._records  = {}
         self._epoch = epoch
         self._init_metrics(metrics)
@@ -107,6 +166,53 @@ class Register(object):
 
         return
     
+
+    @staticmethod
+    def _multi_classification_enable(func : tp.Callable,
+                                    avg: str) -> tp.Callable:
+        """
+        Decorator that enables multi-classification support for a given sklearn metric.
+
+        Args:
+        -----
+            func (callable): The function to be decorated.
+            avg (str, optional): The averaging strategy for the multi-classification scoring.
+
+        Returns:
+        --------
+            callable: The decorated function.
+
+        Raises:
+        -------
+            None.
+
+        Examples:
+        ---------
+            @multi_classification_enable
+            def my_classification_function(y_true, y_pred, avg=None):
+                # Your classification logic here
+                pass
+
+        """
+        
+        @functools.wraps(func)
+        def wrapper(*args ,**kwargs) -> float:
+            # Declare Nonlocal
+            nonlocal avg
+            # Add to kwargs 
+            kwargs['average'] = avg
+            # Evaulate
+            return func(*args , **kwargs)
+        return wrapper
+
+
+    def _init_multiclass(self) -> None:
+        # Wraps the multiclassification strategy
+        for metric_name in  ['f1', 'recall', 'precision', 'auc']:
+            self.available_metric[metric_name] = self._multi_classification_enable(self.available_metric[metric_name] , self.multiclass_strategy)
+        return
+    
+
     def _init_metrics(self, metrics: tp.Union[tp.List[str], str]) -> None:
         """
         Initialize the metrics to be recorded and evaluated.
@@ -213,17 +319,18 @@ class Register(object):
 
         
 
-         # Check if metric is from sklearn or loss func from pytorch
+         # Check if metric is from pytorch
         if issubclass(self.available_metric[metric_name].__class__ , torch.nn.Module):
             return float(self.available_metric[metric_name](y_pred_cpu, y_true_cpu))
-        
+        # If metric is from scikit-learn
         else:
-            # Apply softmax if logits from cross entropy
+            # Apply softmax if logits
             if isinstance(self._loss , (torch.nn.CrossEntropyLoss , )):
                 y_pred_cpu = torch.nn.functional.softmax(y_pred_cpu, dim=1).argmax(dim=1)
 
-            y_pred_cpu = y_pred_cpu.numpy().ravel()
-            y_true_cpu = y_true_cpu.numpy().ravel()
+            y_pred_cpu = y_pred_cpu.numpy()
+            y_true_cpu = y_true_cpu.numpy()
+            
             return float(self.available_metric[metric_name](y_true_cpu, y_pred_cpu))
 
 
@@ -337,9 +444,6 @@ class Register(object):
 
     def __repr__(self) -> str:
         if self.cycle is not None:
-            return f'Register(train, valid), Cycle = {self.cycle}'
+            return f'Register(train, valid), Cycle = {self.cycle} , Multiclass_strategy: {self.multiclass_strategy}'
         else:
-            return 'Register(train, valid)'
-
-
-        
+            return f'Register(train, valid, Multiclass_strategy: {self.multiclass_strategy})'

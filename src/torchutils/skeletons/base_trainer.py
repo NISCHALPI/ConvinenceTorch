@@ -1,3 +1,36 @@
+"""
+This script defines a BaseTrainer class, which is the base class for trainers in PyTorch.
+
+BaseTrainer:
+============
+    Base class for trainers in PyTorch.
+    
+    Parameters:
+    -----------
+        model (torch.nn.Module): The model to be trained.
+        optimizer (torch.optim.Optimizer): The optimizer for updating model parameters.
+        loss (torch.nn.Module): The loss function to compute the training loss.
+    
+    Attributes:
+    -----------
+        model (torch.nn.Module): The model to be trained.
+        optimizer (torch.optim.Optimizer): The optimizer for updating model parameters.
+        loss (torch.nn.Module): The loss function to compute the training loss.
+        _device (torch.device): The device to be used for training. Defaults to GPU:0 if available, otherwise CPU.
+    
+    Properties:
+    -----------
+        device (torch.device): Get or set the device to be used for training.
+    
+    Methods:
+    --------
+        train(*args, **kwargs): Abstract method for training the model.
+        validate(*args, **kwargs): Abstract method for validating the model.
+        save_model(): Abstract method for saving the trained model.
+    
+    Note: For detailed documentation of the class methods, attributes, and properties, please refer to the docstrings within the code.
+"""
+
 import torch
 from abc import ABC, abstractmethod
 import typing as tp
@@ -13,20 +46,24 @@ class BaseTrainer(ABC):
     """Base class for trainers in PyTorch.
 
     Args:
+    -----
         model (torch.nn.Module): The model to be trained.
         optimizer (torch.optim.Optimizer): The optimizer for updating model parameters.
         loss (torch.nn.Module): The loss function to compute the training loss.
 
     Attributes:
+    -----------
         model (torch.nn.Module): The model to be trained.
         optimizer (torch.optim.Optimizer): The optimizer for updating model parameters.
         loss (torch.nn.Module): The loss function to compute the training loss.
         _device (torch.device): The device to be used for training. Defaults to GPU:0 if available, otherwise CPU.
 
     Properties:
+    -----------
         device (torch.device): Get or set the device to be used for training.
 
     Methods:
+    --------
         train(*args, **kwargs): Abstract method for training the model.
         validate(*args, **kwargs): Abstract method for validating the model.
         save_model(): Abstract method for saving the trained model.
@@ -37,7 +74,7 @@ class BaseTrainer(ABC):
         
         
         # Optimizer
-        self.model = model
+        self._model = model
         #OPTIMIZER
         self.optimizer =  optimizer
         #Loss 
@@ -54,16 +91,25 @@ class BaseTrainer(ABC):
             self.device =  torch.device("cuda:0") if torch.cuda.is_available() else torch.device('cpu') 
         
         logger.debug(msg='Moving model to device and linking it to optimizer')
-        self.model = self.model.to(device=self.device)
+        self._model = self._model.to(device=self.device)
         return
         
-        
+    @property
+    def model(self) -> torch.nn.Module:
+        return self._model
+    
+    @model.setter
+    def model(self) -> tp.NoReturn:
+        logger.debug('Cannot assign new model! Instanitate new trainer explicitly for new model')
+        raise RuntimeError('Cannot assign new model! Instanitate new trainer explicitly for new model')
+
 
     @property
     def device(self) -> torch.device:
         """Get or set the device to be used for training.
 
         Returns:
+        --------
             torch.device: The current device.
 
         """
@@ -74,9 +120,11 @@ class BaseTrainer(ABC):
         """Set the device to be used for training.
 
         Args:
+        -----
             device (torch.device): The device to be set.
 
         Raises:
+        -------
             RuntimeError: If the device is not a subclass of torch.device.
 
         """
@@ -94,17 +142,20 @@ class BaseTrainer(ABC):
     def _validate(self, *args , **kwargs):
         pass    
 
-
-    def _weight_init(self, model: torch.nn.Module) -> None:
+    @staticmethod
+    def _weight_init(model: torch.nn.Module) -> None:
         """Initialize the weights of linear and convolutional layers using Xavier initialization.
 
         Args:
+        -----
             model (torch.nn.Module): The PyTorch model for weight initialization.
 
         Returns:
+        --------
             None
 
         Summary:
+        --------
             This function initializes the weights of linear and convolutional layers in the provided PyTorch model
             using Xavier initialization. It applies the initialization to each relevant submodule in a recursive manner.
 
