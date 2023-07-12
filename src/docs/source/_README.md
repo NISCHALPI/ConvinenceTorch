@@ -1,5 +1,3 @@
-# ConvinenceTorch
-<img src="./Logo.jpeg" alt="Logo" width="300">
 ConvinenceTorch is a Python package that provides utility modules and classes for PyTorch, a popular deep learning framework. It offers a collection of tools to simplify and enhance the training process of neural networks in PyTorch.
 
 

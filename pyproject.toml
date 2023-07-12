@@ -27,6 +27,7 @@ keywords = ["torch", "utilities", "trainer", "neural network"]
 
 [project.optional-dependencies]
 dev = ["pandas", "nvitop"]
+doc = ["sphinx", "myst-parser", "sphinx_rtd_theme", "nbsphinx"]
 
 [project.urls]
 Homepage = "https://github.com/NISCHALPI/ConvinenceTorch"
