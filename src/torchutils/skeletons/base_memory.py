@@ -37,6 +37,7 @@ Note: For detailed documentation of the methods and their parameters, please ref
 """
 
 import typing as tp
+from queue import Queue
 
 import torch
 
@@ -108,22 +109,26 @@ class MemNode:
             logger.debug(
                 f"Forward pass for For {self._model._get_name()} , {id(self._model)}, sucesseful!"
             )
-
         # Calculate the output memory usage
         self._out_mem = torch.numel(self._output) * self._dtype_size
+
+        # Set status dict attribute
+        self._status_dict = {"name": self._model._get_name(), "out_mem": self._out_mem}
+        if hasattr(self, "_parm_mem"):
+            self._status_dict["param_mem"] = self._param_mem
 
     @staticmethod
     def _to(size_in_bytes: int, reduction: str = "MB") -> float:
         if reduction == "MB":
             return size_in_bytes / (1024) ** 2
 
-        elif reduction == "KB":
+        if reduction == "KB":
             return size_in_bytes / 1024
 
-        elif reduction == "B":
+        if reduction == "B":
             return size_in_bytes
 
-        elif reduction == "GB":
+        if reduction == "GB":
             return size_in_bytes / (1024**3)
 
         raise RuntimeError("reduction must be one of MB | GB | B | KB")
@@ -163,6 +168,7 @@ class MemNode:
         # Run PrettyPrint
         self._prettyprint(reduction)
 
+        # Return Status dict
         return self._output
 
 
@@ -170,31 +176,37 @@ class MemPool:
     """Memory Pool class to track memory usage of a neural network model.
 
     Args:
-    -----
         model (torch.nn.Module): Model to be tracked.
+            The model can be any torch.nn.Module or a nested module.
         device (torch.device): Device on which the model is located.
+            This should explicitly be an instance of torch.device.
 
     Attributes:
-    -----------
         _model (torch.nn.Module): Model being tracked.
         _device (torch.device): Device on which the model is located.
-        _pooled_memnodes (list): List of MemNode instances for each base module.
+        _node_queue (Queue): Queue of MemNode instances for each base module.
 
     Methods:
-    --------
         _init_pool() -> None:
             Initializes the memory pool by creating MemNode instances for each base module.
 
-        _calc_memusage(input_shape: tuple, input_dtype: torch.dtype = torch.float32, reduction: str = 'MB') -> None:
+        calc_memusage(
+            input_shape: Union[torch.Size, Iterable[int]],
+            input_dtype: torch.dtype = torch.float32,
+            reduction: str = "MB"
+        ) -> float:
             Calculates memory usage for a given input shape and data type.
+
     """
 
     def __init__(self, model: torch.nn.Module, device: torch.device) -> None:
-        """Constructer for mempool takes model and the device.
+        """Constructor for MemPool class.
 
         Args:
-            model (torch.nn.Module): This can be any torch.nn.Module or nested module
-            device (torch.device): This should explicitly be an instance of torch.device
+            model (torch.nn.Module): Model to be tracked.
+                The model can be any torch.nn.Module or a nested module.
+            device (torch.device): Device on which the model is located.
+                This should explicitly be an instance of torch.device.
         """
         self._model = model
         self._device = device
@@ -202,42 +214,66 @@ class MemPool:
 
     def _init_pool(self) -> None:
         # Gets both the sequentail and nested modules
-        self._pooled_memnodes = []
+        self._node_queue = Queue()
 
-        for module in self._model.modules():
-            if not isinstance(module, torch.nn.Sequential):
-                self._pooled_memnodes.append(MemNode(module))
+        for (
+            _,
+            module,
+        ) in (
+            self._model._modules.items()
+        ):  # torch.nn.Module._modules returns an order dics which only contatins base models
+            self._node_queue.put(MemNode(module))
 
         logger.debug(
-            f"Init Pool for MemPool {id(self)} has {len(self._pooled_memnodes)} modules"
+            f"Init Queue for MemPool {id(self)} has {self._node_queue.qsize} modules"
         )
 
-    def _calc_memusage(
+    def calc_memusage(
         self,
         input_shape: tp.Union[torch.Size, tp.Iterable[int]],
         input_dtype: torch.dtype = torch.float32,
         reduction: str = "MB",
     ) -> float:
+        """Calculate the memory usage for a given input shape and data type.
+
+        Parameters:
+            input_shape (Union[torch.Size, Iterable[int]]): The shape of the input tensor for the model.
+            input_dtype (torch.dtype, optional): Data type of the input tensor. Defaults to torch.float32.
+            reduction (str, optional): The reduction to be used in the memory size representation. Defaults to 'MB'.
+
+        Returns:
+            float: Total memory usage per batch_size for the given input shape and dtype in the specified reduction.
+        """
         input_ = torch.rand(*input_shape, dtype=input_dtype, device=self._device)
 
         print("---------------------Memory-Usage-Per-Batch---------------------------")
-        print(
-            f"Input Layer Memory: {MemNode._to(input_.numel() * input_.element_size(), reduction=reduction)} {reduction}"
-        )
-
-        # Temp
-        temp_out = input_
-        total_mem = MemNode._to(
+        input_size = MemNode._to(
             input_.numel() * input_.element_size(), reduction=reduction
         )
+        print(f"Input Layer Memory: {input_size} {reduction}")
+
+        total_mem = input_size
+
+        # Temp status dict in order from MemNodes
+        status_dicts = []
+        temp_input = input_
 
         # Mem Forward Loop
-        for memnodes in self._pooled_memnodes:
-            temp_out = memnodes.forward(temp_out, reduction=reduction)
+        while not self._node_queue.empty():
+            mem_node = self._node_queue.get()
+            temp_input = mem_node.forward(temp_input, reduction=reduction)
+            status_dicts.append(mem_node._status_dict)
+            total_mem += (
+                2 * status_dicts[-1]["out_mem"]
+            )  # Memory With Gradient i.e output_size * 2
 
-            total_mem += 2 * MemNode._to(memnodes._out_mem, reduction=reduction)
-            if hasattr(memnodes, "_param_mem"):
-                total_mem += 2 * MemNode._to(memnodes._param_mem, reduction=reduction)
+        # Add parameter weights to total memory
+        total_mem += (
+            sum(map(torch.numel, self._model.parameters())) * input_.element_size()
+        )
+
+        # Convert from bytes to appoprate reduction
+        total_mem = MemNode._to(total_mem, reduction=reduction)
 
         print(
             "--------------------------------SUMMARY---------------------------------"

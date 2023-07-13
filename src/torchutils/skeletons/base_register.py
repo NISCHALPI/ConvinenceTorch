@@ -115,8 +115,7 @@ class Register:
     available_metric = {
         "accuracy": met.accuracy_score,
         "f1": met.f1_score,
-        "auc": met.roc_auc_score,
-        "L1": met.mean_absolute_error,
+        "l1": met.mean_absolute_error,
         "precision": met.precision_score,
         "recall": met.recall_score,
     }
@@ -154,6 +153,7 @@ class Register:
             str, tp.Union[tp.Dict[str, tp.Dict[str, list[float]]], list[float]]
         ]
 
+        assert epoch > 0, "Epoch cannot be negative"
         self._epoch = epoch
         self._init_metrics(metrics)
         self._init_records()
@@ -196,7 +196,7 @@ class Register:
 
     def _init_multiclass(self) -> None:
         # Wraps the multiclassification strategy
-        for metric_name in ["f1", "recall", "precision", "auc"]:
+        for metric_name in ["f1", "recall", "precision"]:
             self.available_metric[metric_name] = self._multi_classification_enable(
                 self.available_metric[metric_name], self.multiclass_strategy
             )
@@ -213,9 +213,9 @@ class Register:
         if metrics is None:
             self._metrics = [self._loss._get_name()]  # ty
         elif isinstance(metrics, str):
-            self._metrics = [metrics, self._loss._get_name()]
+            self._metrics = [self._loss._get_name(), metrics]
         elif isinstance(metrics, list):
-            self._metrics = [*metrics, self._loss._get_name()]
+            self._metrics = [self._loss._get_name(), *metrics]
         else:
             raise ValueError("Metric type should be one of  List[str] | str | None ")
 
@@ -274,8 +274,8 @@ class Register:
             or metric_name == self._loss._get_name()
         ):
             return True
-        else:
-            raise RuntimeError(f"{metric_name} is not available!")
+
+        raise RuntimeError(f"{metric_name} is not available!")
 
     def _eval_metric(
         self, y_pred: torch.Tensor, y_true: torch.Tensor, metric_name: str
@@ -303,18 +303,21 @@ class Register:
         # Check if metric is from pytorch
         if issubclass(self.available_metric[metric_name].__class__, torch.nn.Module):
             return float(self.available_metric[metric_name](y_pred_cpu, y_true_cpu))
+
         # If metric is from scikit-learn
-        else:
-            # Apply softmax if logits
-            if isinstance(self._loss, (torch.nn.CrossEntropyLoss,)):
-                y_pred_cpu = torch.nn.functional.softmax(y_pred_cpu, dim=1).argmax(
-                    dim=1
-                )
+        # Apply softmax if logits having column greater than one
+        if (
+            isinstance(self._loss, (torch.nn.CrossEntropyLoss,))
+            and y_pred_cpu.shape[-1] > 1
+        ):
+            y_pred_cpu = torch.nn.functional.softmax(y_pred_cpu, dim=-1).argmax(
+                dim=-1
+            )  # Extracts indexes
 
-            y_pred_cpu = y_pred_cpu.numpy()
-            y_true_cpu = y_true_cpu.numpy()
+        y_pred_cpu = y_pred_cpu.numpy().flatten()
+        y_true_cpu = y_true_cpu.numpy().flatten()
 
-            return float(self.available_metric[metric_name](y_true_cpu, y_pred_cpu))
+        return float(self.available_metric[metric_name](y_true_cpu, y_pred_cpu))
 
     def _record_batch(
         self, y_pred: torch.Tensor, y_true: torch.Tensor, epoch: int, where: bool = True
@@ -346,7 +349,7 @@ class Register:
             epoch (int): crossponding epoch
             time (float): time from time.time()
         """
-        self._records["time"][self._key(epoch=epoch)] = time # type: ignore[assignment,call-overload]
+        self._records["time"][self._key(epoch=epoch)] = time  # type: ignore[assignment,call-overload]
 
         pass
 
@@ -378,7 +381,9 @@ class Register:
         # Fill train dataframe
         for metric_name in self._records["train"].keys():  # type: ignore
             for epoch in self._records["train"][metric_name].keys():  # type: ignore
-                self._records_per_epoch["train"][metric_name][epoch] = mean(self._records["train"][metric_name][epoch])  # type: ignore
+                # Non Empty check
+                if len(self._records["train"][metric_name][epoch]) != 0:
+                    self._records_per_epoch["train"][metric_name][epoch] = mean(self._records["train"][metric_name][epoch])  # type: ignore
 
         # Adds time
         self._records_per_epoch["train"]["time"] = self._records["time"]
@@ -409,7 +414,7 @@ class Register:
                     # IF non empty register
                     self._records_per_epoch["valid"][metric_name][epoch] = mean(self._records["valid"][metric_name][epoch])  # type: ignore
 
-        return None
+        return
 
     def plot_train_validation_metric_curve(
         self, metric: tp.Optional[str] = None
@@ -486,10 +491,10 @@ class Register:
         """
         if hasattr(self, "_records_per_epoch"):
             return self._records_per_epoch
-        else:
-            raise RuntimeError(
-                "Run Register._minimize_per_epoch in the last epoch of training loop"
-            )
+
+        raise RuntimeError(
+            "Run Register._minimize_per_epoch in the last epoch of training loop"
+        )
 
     def __getitem__(self, key: str) -> pd.DataFrame:
         """Magic getitem method.
@@ -509,6 +514,23 @@ class Register:
             str: string representation of the register.
         """
         if self.cycle is not None:
-            return f"Register(train, valid), Cycle = {self.cycle} , Multiclass_strategy: {self.multiclass_strategy}"
-        else:
-            return f"Register(train, valid, Multiclass_strategy: {self.multiclass_strategy})"
+            return f"Register(train, valid, cycle = {self.cycle} , multiclass_strategy: {self.multiclass_strategy})"
+
+        return (
+            f"Register(train, valid, multiclass_strategy: {self.multiclass_strategy})"
+        )
+
+    @property
+    def metrics(self) -> tp.List[str]:
+        """Property of available metric.
+
+        Returns:
+        -------
+            copy of all the available metrics since list is mutable
+        """
+        return self._metrics.copy()
+
+    @metrics.setter
+    def metrics(self) -> tp.NoReturn:
+        """Setter."""
+        raise RuntimeError("Cannot set metrics property")

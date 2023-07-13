@@ -34,7 +34,7 @@ Homepage = "https://github.com/NISCHALPI/ConvinenceTorch"
 
 
 [tool.ruff]
-select =["E", "F", "I", "UP", "ANN", "ARG", "D"]
+select =["E", "F", "I", "UP", "ANN", "ARG", "D", "RET"]
 exclude = ["tests", "src/docs"]
 src =['./src/torchutils']
 # Ignore long lines and self annotations 

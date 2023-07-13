@@ -9,11 +9,8 @@ ConvinenceTorch is a Python package that provides utility modules and classes fo
 
 ## Installation
 
-You can install ConvinenceTorch using `pip`:
+**This package has not published in PyPI yet. Still in early development stage. Clone and do an editable install**
 
-```shell
-pip install convinencetorch
-```
 
 ## Usage 
 

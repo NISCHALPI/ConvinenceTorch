@@ -41,9 +41,9 @@ from time import time
 
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import]
 
-from ..skeletons import BaseTrainer, MemPool, Register, get_logger
+from ..skeletons import BaseTrainer, MemPool, Register, RingBuffer, get_logger
 
 logger = get_logger("NNtrainer")
 
@@ -92,6 +92,7 @@ class NNtrainer(BaseTrainer):
         seed: tp.Optional[float] = None,
         device: tp.Optional[torch.device] = None,
         lr_scheduler: tp.Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+        max_persistence_over_cyces: int = 5,
     ) -> None:
         """Initializes the NNtrainer.
 
@@ -109,6 +110,8 @@ class NNtrainer(BaseTrainer):
             The device to run the model on. Defaults to None.
         lr_scheduler : torch.optim.lr_scheduler.LRScheduler, optional
             The learning rate scheduler. Defaults to None.
+        max_persistence_over_cyces : int
+            Maximum amount of registers hold over cycle
         """
         # Initlize
         super().__init__(model, optimizer, loss)
@@ -125,11 +128,39 @@ class NNtrainer(BaseTrainer):
         # set device
         if device is not None:
             self.device = device
+
         # Moves model to device : default is cuda
         self._move_to_device()
 
+        # set ring buffer attribute
+        self._regiser_buffer = RingBuffer(max_persistence=max_persistence_over_cyces)
+
         # Training Cycles
         self.cycle: int = 0
+
+        return
+
+    @property
+    def register_buffer(self) -> RingBuffer:
+        """Access register ring buffer property.
+
+        _This gives user acces to the old training cycle registers.
+
+        Returns:
+        -------
+            Ring Buffer of the registers
+        """
+        return self._regiser_buffer
+
+    @register_buffer.setter
+    def register_buffer(self) -> tp.NoReturn:
+        """Cannot set register buffer. Fixed for a trainer instance.
+
+        Returns:
+        -------
+            tp.NoReturn
+        """
+        raise RuntimeError("Cannot set Register Ring Buffer")
 
     def _check_optimizer_model_link(self) -> None:
         """Check if the optimizer is linked with the model parameters."""
@@ -167,6 +198,7 @@ class NNtrainer(BaseTrainer):
         checkpoint_file: tp.Optional[str] = None,
         checkpoint_every_x: int = -1,
         multiclass_reduction_strategy_for_metric: str = "micro",
+        weight_init: bool = False,
     ) -> None:
         """Trains the model.
 
@@ -202,7 +234,7 @@ class NNtrainer(BaseTrainer):
         logger.debug(f"Setting model to train for OBID = {id(self)}")
 
         # Initilize Weights using Xaviers Uniform Weight init
-        if self.cycle == 0:
+        if self.cycle == 0 and weight_init:
             self._weight_init(self.model)
 
         # Restart Training
@@ -213,25 +245,24 @@ class NNtrainer(BaseTrainer):
             self.cycle = 0
             self.model.apply(self._weight_init)
 
-        # If instantiate the register if record loss at the start
+        # If record loss, set ring-buffer to online
         if record_loss:
-            setattr(
-                self,
-                "register",
+            self._regiser_buffer._online = True
+            # Enqueue register in the ring buffer
+            self._regiser_buffer.enqueue(
                 Register(
                     metrics=metrics,
                     loss=self.loss,
                     epoch=epoch,
                     cycle=self.cycle + 1,
                     multiclass_reduction_strategy=multiclass_reduction_strategy_for_metric,
-                ),
+                )
             )
-            logger.debug(f"Set and register of {self.register.__repr__()}")
 
-        # If not, remove previous if present
-        else:
-            if hasattr(self, "register"):
-                delattr(self, "register")
+            logger.debug("Register Buffer is online!")
+            logger.debug(
+                f"Enquing register in the ring buffer {self._regiser_buffer.peek.__repr__()}"
+            )
 
         # if passed seed
         if self.seed:
@@ -245,10 +276,11 @@ class NNtrainer(BaseTrainer):
             epoch_max=epoch,
             validate_every_epoch=validate_every_x_epoch,
             checkpoint_file=checkpoint_file,
-            record_loss=record_loss,
             log_every_batch=log_every_x_batch,
             save_every=checkpoint_every_x,
         )
+
+        return
 
     def train_from_checkpoint(  # type: ignore[override]
         self,
@@ -301,6 +333,9 @@ class NNtrainer(BaseTrainer):
         if self.seed:
             torch.manual_seed(self.seed)
 
+        # Set Cycle to previous cycle
+        self.cycle = checkpoint_dict["cycle"]
+
         # Assert that current epoch is larger
         assert (
             epoch > checkpoint_dict["epoch"]
@@ -317,20 +352,24 @@ class NNtrainer(BaseTrainer):
 
         logger.debug("Resuming the Registry")
 
-        # Resume Registry
+        # Resume Ring Buffer| This is a new buffer that will not load the old buffer from checkpoint
         if record_loss:
-            self.register = Register(
-                metrics=metrics,
-                loss=self.loss,
-                epoch=(epoch - checkpoint_dict["epoch"]),
-                multiclass_reduction_strategy=multiclass_reduction_strategy_for_metric,
+            self._regiser_buffer._online = True
+            print(self._regiser_buffer)
+            self._regiser_buffer.enqueue(
+                Register(
+                    metrics=metrics,
+                    loss=self.loss,
+                    epoch=(epoch - checkpoint_dict["epoch"]),
+                    multiclass_reduction_strategy=multiclass_reduction_strategy_for_metric,
+                    cycle=self.cycle + 1,
+                )
             )
-            logger.debug(f"Set and register of {self.register.__repr__()}")
 
-        else:
-            if hasattr(self, "register"):
-                logger.debug("Deleting Previous Registry attribute")
-                delattr(self, "register")
+            logger.debug("Register Buffer is online!")
+            logger.debug(
+                f"Enquing register in the ring buffer {self._regiser_buffer.__repr__()}"
+            )
 
         logger.info(
             f'Resuming Training from Epoch:{checkpoint_dict["epoch"]} to Epoch:{epoch}'
@@ -343,12 +382,12 @@ class NNtrainer(BaseTrainer):
             epoch_min=1,
             epoch_max=(epoch - checkpoint_dict["epoch"]),
             validate_every_epoch=validate_every_x_epoch,
-            record_loss=record_loss,
             log_every_batch=log_every_x_batch,
             checkpoint_file=checkpoint_file,
             save_every=checkpoint_every_x,
         )
-        pass
+
+        return
 
     def _run_train_cycle(
         self,
@@ -358,7 +397,6 @@ class NNtrainer(BaseTrainer):
         epoch_max: int,
         validate_every_epoch: int,
         checkpoint_file: tp.Optional[str],
-        record_loss: bool,
         log_every_batch: tp.Optional[int],
         save_every: int = -1,
     ) -> None:
@@ -406,10 +444,6 @@ class NNtrainer(BaseTrainer):
             ncols=80,
             position=0,
         ):
-            # Trigger LR Scheduler
-            if self.scheduler is not None:
-                self.scheduler.step()
-
             for idx, (feature, lable) in enumerate(trainloader):
                 # Move to device
                 feature = feature.to(self.device)
@@ -427,15 +461,19 @@ class NNtrainer(BaseTrainer):
                             f"Epoch {e}, Batch: {idx}, Loss: {loss.data.item():.3f}..."
                         )
 
-                # Register the metrics
-                if record_loss:
-                    self.register._record_batch(
-                        y_pred=fp, y_true=lable, epoch=e, where=True
+                # Register the metrics if buffer is online
+                if self._regiser_buffer._online:
+                    self._regiser_buffer.peek._record_batch(
+                        y_pred=fp.data, y_true=lable, epoch=e, where=True
                     )
+
+            # Trigger LR Scheduler
+            if self.scheduler is not None:
+                self.scheduler.step()
 
             # Evaluate on validation set
             if validate_every_epoch != 0 and valloader is not None:
-                if record_loss:
+                if self._regiser_buffer._online:
                     if e % validate_every_epoch == 0:
                         self._validate(valloader=valloader, epoch=e)
                 else:
@@ -457,12 +495,14 @@ class NNtrainer(BaseTrainer):
                     )
 
             # Record traning time per epoch
-            if record_loss:
-                self.register._record_train_time_per_epoch(epoch=e, time=time())
+            if self._regiser_buffer._online:
+                self._regiser_buffer.peek._record_train_time_per_epoch(
+                    epoch=e, time=time()
+                )
 
         # Minimize the Register
-        if record_loss:
-            self.register._minimize_per_epoch()
+        if self._regiser_buffer._online:
+            self._regiser_buffer.peek._minimize_per_epoch()
 
         # Log
         logger.info(
@@ -471,6 +511,9 @@ class NNtrainer(BaseTrainer):
 
         # Increment Cycle
         self.cycle += 1
+
+        # Set Buffer to offline after training
+        self._regiser_buffer._online = False
 
     def _validate(  # type: ignore[override]
         self,
@@ -485,10 +528,6 @@ class NNtrainer(BaseTrainer):
             The data loader for the validation set.
         metrics : Union[Iterable[str], str], optional
             Evaluation metrics to calculate. Defaults to None.
-        *args
-            Additional positional arguments.
-        **kwargs
-            Additional keyword arguments.
 
         Returns:
         -------
@@ -507,8 +546,8 @@ class NNtrainer(BaseTrainer):
                 fp = self.model(feature)
                 loss += self.loss(fp, lable)
 
-                if hasattr(self, "register") and epoch is not None:
-                    self.register._record_batch(
+                if self._regiser_buffer._online and epoch is not None:
+                    self._regiser_buffer.peek._record_batch(
                         y_pred=fp, y_true=lable, epoch=epoch, where=False
                     )
 
@@ -517,35 +556,22 @@ class NNtrainer(BaseTrainer):
         logger.debug(f"Setting model to train for OBID = {id(self)}")
         return loss
 
-    def get_loss(self) -> tp.Union[dict, None]:
-        """Returns the training loss.
-
-        Returns:
-        -------
-        Union[dict, None]
-            The training loss as a dictionary if available, None otherwise.
-        """
-        if hasattr(self, "register"):
-            return self.register.records
-
-        return None
-
     def plot_train_validation_metric_curve(
         self, metric: tp.Optional[str] = None
     ) -> None:
-        """Plots the training and validation metric curves.
+        """Plots the training and validation metric curves for last recorded cycle.
 
         Parameters
         ----------
         metric : str, optional
             The metric to plot. Defaults to loss.
         """
-        if hasattr(self, "register"):
-            self.register.plot_train_validation_metric_curve(metric=metric)
+        if not self._regiser_buffer.is_empty():
+            self._regiser_buffer.peek.plot_train_validation_metric_curve(metric=metric)
 
         else:
             raise RuntimeError(
-                "Record Loss was not passed to train method. Metrics not Recorded!"
+                "Register buffer is empty. Metrics not Recorded! Pass record_loss=True"
             )
 
     def predict(self, X: torch.Tensor) -> torch.Tensor:
@@ -596,11 +622,12 @@ class NNtrainer(BaseTrainer):
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dic": self.optimizer.state_dict(),
+            "cycle": self.cycle,
         }
 
-        # If has registery attribute, save it as well
-        if hasattr(self, "register"):
-            save_dict["register"] = self.register
+        # If has non empty ring register buffer attribute, save it as well
+        if not self._regiser_buffer.is_empty():
+            save_dict["register_buffer"] = self._regiser_buffer
 
         torch.save(save_dict, f=filename)
 
@@ -644,4 +671,4 @@ class NNtrainer(BaseTrainer):
         mempool = MemPool(self.model, self.device)  # type: ignore[arg-type]
 
         # CalcMemUse
-        return mempool._calc_memusage(batch_shape, batch_dtype, recduction)
+        return mempool.calc_memusage(batch_shape, batch_dtype, recduction)
