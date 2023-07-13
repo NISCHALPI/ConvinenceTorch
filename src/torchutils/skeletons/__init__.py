@@ -1,4 +1,5 @@
-from .base_log import get_logger , configure_logging
-from .base_trainer import BaseTrainer
+"""Imports the skeleton classes."""
+from .base_log import configure_logging, get_logger
+from .base_memory import MemNode, MemPool
 from .base_record import Register
-from .base_memory import MemPool
+from .base_trainer import BaseTrainer

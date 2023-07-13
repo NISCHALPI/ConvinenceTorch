@@ -20,14 +20,35 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Utilities"
 ]
-dependencies = ["torch >= 2.0.0", "scikit-learn >=1.0", "matplotlib", "tqdm"]
+dependencies = ["torch >= 2.0.0", "scikit-learn >=1.0", "matplotlib", "tqdm", "pandas"]
 keywords = ["torch", "utilities", "trainer", "neural network"]
 
 
 
 [project.optional-dependencies]
-dev = ["pandas", "nvitop"]
+dev = ["nvitop", "ruff", "black", "mypy", "pytest"]
 doc = ["sphinx", "myst-parser", "sphinx_rtd_theme", "nbsphinx"]
 
 [project.urls]
 Homepage = "https://github.com/NISCHALPI/ConvinenceTorch"
+
+
+[tool.ruff]
+select =["E", "F", "I", "UP", "ANN", "ARG", "D"]
+exclude = ["tests", "src/docs"]
+src =['./src/torchutils']
+# Ignore long lines and self annotations 
+ignore =['ANN101', 'E501']
+
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["E402", "F401"]
+
+[tool.ruff.flake8-quotes]
+docstring-quotes = "double"
+
+[tool.ruff.pydocstyle]
+convention = "google"
+
+
+

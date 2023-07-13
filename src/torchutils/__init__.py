@@ -1,5 +1,4 @@
-"""
-torchutils package
+"""torchutils package.
 
 A package containing utility modules and classes for PyTorch.
 
@@ -31,13 +30,10 @@ from torchutils.trainer import NNtrainer
 trainer = NNtrainer(model, optimizer, loss)
 
 """
-
-
 from .skeletons import configure_logging
-from .trainer import NNtrainer
 
-# Configures the loggin module 
+# Configures the loggin module
 configure_logging()
 
-# Version 
-__version__ = '1.0.0'
+# Version
+__version__ = "1.0.0"
