@@ -37,8 +37,10 @@ Methods:
 """
 
 import typing as tp
+import warnings
 from time import time
 
+import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm  # type: ignore[import]
@@ -141,6 +143,51 @@ class NNtrainer(BaseTrainer):
         return
 
     @property
+    def optimizer(self) -> torch.optim.Optimizer:
+        """Getter method for the optimizer property.
+
+        Returns:
+            torch.optim.Optimizer: The current optimizer used by the trainer.
+
+        Example:
+            # Initialize trainer
+            trainer = MyTrainer(model, optimizer, loss_function)
+
+            # Access the optimizer
+            current_optimizer = trainer.optimizer
+        """
+        return self._optimizer
+
+    @optimizer.setter
+    def optimizer(self, optim: torch.optim.Optimizer) -> None:
+        """Setter method for the optimizer property.
+
+        Parameters:
+            optim (torch.optim.Optimizer): The new optimizer to be set for the trainer.
+
+        Note:
+            This method sets a new optimizer for the trainer. If a learning rate scheduler is already
+            attached to the current optimizer, it will also be linked to the new optimizer to ensure
+            consistent behavior during training.
+
+        Example:
+            # Initialize trainer
+            trainer = MyTrainer(model, optimizer, loss_function)
+
+            # Create a new optimizer
+            new_optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+            # Set the new optimizer for the trainer
+            trainer.optimizer = new_optimizer
+        """
+        if self.scheduler is not None:
+            self.scheduler.optimizer = optim
+
+        self._optimizer = optim
+
+        return
+
+    @property
     def register_buffer(self) -> RingBuffer:
         """Access register ring buffer property.
 
@@ -191,7 +238,6 @@ class NNtrainer(BaseTrainer):
         valloader: tp.Optional[DataLoader] = None,
         epoch: int = 100,
         log_every_x_batch: tp.Optional[int] = None,
-        restart: bool = False,
         validate_every_x_epoch: int = 1,
         record_loss: bool = True,
         metrics: tp.Optional[tp.Union[tp.List[str], str]] = None,
@@ -199,6 +245,9 @@ class NNtrainer(BaseTrainer):
         checkpoint_every_x: int = -1,
         multiclass_reduction_strategy_for_metric: str = "micro",
         weight_init: bool = False,
+        swa_model: tp.Optional[torch.nn.Module] = None,
+        swa_scheduler: tp.Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+        swa_start_epoch: tp.Optional[int] = None,
     ) -> None:
         """Trains the model.
 
@@ -234,15 +283,7 @@ class NNtrainer(BaseTrainer):
         logger.debug(f"Setting model to train for OBID = {id(self)}")
 
         # Initilize Weights using Xaviers Uniform Weight init
-        if self.cycle == 0 and weight_init:
-            self._weight_init(self.model)
-
-        # Restart Training
-        if restart:
-            logger.debug(
-                "Restart flag passed to train! reinitilizing weights using xavier normal and bias to zero"
-            )
-            self.cycle = 0
+        if weight_init:
             self.model.apply(self._weight_init)
 
         # If record loss, set ring-buffer to online
@@ -268,16 +309,50 @@ class NNtrainer(BaseTrainer):
         if self.seed:
             torch.manual_seed(self.seed)
 
+        # SWA SPECIFIC Setup
+        swa_flag = False
+        if swa_model is not None:
+            assert isinstance(
+                swa_model, torch.optim.swa_utils.AveragedModel
+            ), "swa model is not an instanc of torch.optim.swa_utils.AveragedModel"
+            assert isinstance(
+                swa_scheduler, torch.optim.swa_utils.SWALR
+            ), "swa model is not an instanc of torch.optim.swa_utils.SWALR"
+            assert 1 <= swa_start_epoch < epoch, "swa epoch must be in [1, epoch)"
+            self.swa_model = swa_model
+            self.swa_scheduler = swa_scheduler
+            self.swa_start_epoch = swa_start_epoch
+
+            if not hasattr(self, 'swa_register_buffer'):
+                self.swa_register_buffer = RingBuffer(
+                    self._regiser_buffer.max_persistence
+                )
+
+            if record_loss and valloader is not None:
+                self.swa_register_buffer.enqueue(
+                    Register(
+                        metrics=metrics,
+                        loss=self.loss,
+                        epoch=epoch,
+                        cycle=self.cycle,
+                        multiclass_reduction_strategy=multiclass_reduction_strategy_for_metric,
+                    )
+                )
+
+            swa_flag = True
+            self.swa_register_buffer._online = True
+
         # Start the training cycle
         self._run_train_cycle(
             trainloader=trainloader,
             valloader=valloader,
-            epoch_min=1,
+            epoch_min=0,
             epoch_max=epoch,
             validate_every_epoch=validate_every_x_epoch,
             checkpoint_file=checkpoint_file,
             log_every_batch=log_every_x_batch,
             save_every=checkpoint_every_x,
+            swa_flag=swa_flag,
         )
 
         return
@@ -379,7 +454,7 @@ class NNtrainer(BaseTrainer):
         self._run_train_cycle(
             trainloader=trainloader,
             valloader=valloader,
-            epoch_min=1,
+            epoch_min=0,
             epoch_max=(epoch - checkpoint_dict["epoch"]),
             validate_every_epoch=validate_every_x_epoch,
             log_every_batch=log_every_x_batch,
@@ -399,6 +474,7 @@ class NNtrainer(BaseTrainer):
         checkpoint_file: tp.Optional[str],
         log_every_batch: tp.Optional[int],
         save_every: int = -1,
+        swa_flag: bool = False,
     ) -> None:
         """Run the training cycle.
 
@@ -438,7 +514,7 @@ class NNtrainer(BaseTrainer):
 
         # Start the cycle
         for e in tqdm(
-            range(epoch_min, epoch_max + 1),
+            range(epoch_min, epoch_max),
             desc=f"Train Cycle: {self.cycle + 1} , Epoch",
             colour="blue",
             ncols=80,
@@ -456,7 +532,7 @@ class NNtrainer(BaseTrainer):
 
                 # Log the batch log
                 if log_every_batch is not None:
-                    if e % log_every_batch == 0:
+                    if (e + 1) % log_every_batch == 0:
                         logger.info(
                             f"Epoch {e}, Batch: {idx}, Loss: {loss.data.item():.3f}..."
                         )
@@ -467,19 +543,47 @@ class NNtrainer(BaseTrainer):
                         y_pred=fp.data, y_true=lable, epoch=e, where=True
                     )
 
-            # Trigger LR Scheduler
-            if self.scheduler is not None:
-                self.scheduler.step()
-
             # Evaluate on validation set
             if validate_every_epoch != 0 and valloader is not None:
                 if self._regiser_buffer._online:
-                    if e % validate_every_epoch == 0:
-                        self._validate(valloader=valloader, epoch=e)
+                    if (e + 1) % validate_every_epoch == 0:
+                        self._validate(valloader=valloader, epoch=e, swa_flag=swa_flag)
                 else:
                     raise ValueError(
                         "Validation Data Loader Passed but record_loss is False. No point in validataion. Pass record_loss = True explicitly"
                     )
+
+            # SWA Flags and more
+            if swa_flag and (e + 1) >= self.swa_start_epoch:
+                self.swa_model.update_parameters(self.model)
+                self.swa_scheduler.step()
+            else:
+                # Trigger LR Scheduler after validation | if none , trigger based on loss on training for ReduceLROnPlateau
+                if self.scheduler is not None:
+                    if isinstance(
+                        self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
+                    ):
+                        assert (
+                            validate_every_epoch == 1
+                        ), "Cannot use one validation loss for one epoch and training loss for another epoch to ReduceLROnPlateau Scheduler. Use validate_every_epoch = 1 in training."
+                        if validate_every_epoch != 0 and valloader is not None:
+                            self.scheduler.step(
+                                sum(
+                                    self._regiser_buffer.peek.records["valid"][
+                                        self.loss._get_name()
+                                    ][f"Epoch_{e}"]
+                                )
+                            )
+                        else:
+                            self.scheduler.step(
+                                sum(
+                                    self._regiser_buffer.peek.records["train"][
+                                        self.loss._get_name()
+                                    ][f"Epoch_{e}"]
+                                )
+                            )
+                    else:
+                        self.scheduler.step()
 
             # Save Checkpoint if available
             if checkpoint_file:
@@ -489,7 +593,7 @@ class NNtrainer(BaseTrainer):
                         epoch=e, filename=checkpoint_file + "_checkpoint.bin"
                     )
                 # Save every epoch
-                elif e % save_every == 0:
+                elif (e + 1) % save_every == 0:
                     self._save_checkpoint(
                         epoch=e, filename=checkpoint_file + f"_checkpoint{e}.bin"
                     )
@@ -499,10 +603,19 @@ class NNtrainer(BaseTrainer):
                 self._regiser_buffer.peek._record_train_time_per_epoch(
                     epoch=e, time=time()
                 )
+                if swa_flag:
+                    self._regiser_buffer.peek._record_train_time_per_epoch(
+                        epoch=e, time=time()
+                    )
 
         # Minimize the Register
         if self._regiser_buffer._online:
             self._regiser_buffer.peek._minimize_per_epoch()
+
+        if swa_flag:
+            # SWA Batch Statistics update
+            torch.optim.swa_utils.update_bn(trainloader, self.swa_model)
+            self.swa_register_buffer.peek._minimize_per_epoch()
 
         # Log
         logger.info(
@@ -519,6 +632,7 @@ class NNtrainer(BaseTrainer):
         self,
         valloader: DataLoader,
         epoch: tp.Optional[int] = None,
+        swa_flag: bool = False,
     ) -> float:
         """Validates the model on a validation set.
 
@@ -536,6 +650,9 @@ class NNtrainer(BaseTrainer):
         """
         # Set to eval
         self.model.eval()
+        if swa_flag:
+            self.swa_model.eval()
+
         logger.debug(f"Setting model to eval for OBID = {id(self)}")
 
         with torch.no_grad():
@@ -551,8 +668,18 @@ class NNtrainer(BaseTrainer):
                         y_pred=fp, y_true=lable, epoch=epoch, where=False
                     )
 
+                if swa_flag:
+                    fp_swa = self.swa_model(feature)
+                    if self.swa_register_buffer._online and epoch is not None:
+                        self.swa_register_buffer.peek._record_batch(
+                            y_pred=fp_swa, y_true=lable, epoch=epoch, where=False
+                        )
+
         # Set to train
         self.model.train()
+        if swa_flag:
+            self.swa_model.train()
+
         logger.debug(f"Setting model to train for OBID = {id(self)}")
         return loss
 
@@ -566,13 +693,32 @@ class NNtrainer(BaseTrainer):
         metric : str, optional
             The metric to plot. Defaults to loss.
         """
-        if not self._regiser_buffer.is_empty():
-            self._regiser_buffer.peek.plot_train_validation_metric_curve(metric=metric)
+        if metric is None:
+            metric = self.loss._get_name()
 
+        if not self._regiser_buffer.is_empty():
+            ax = self._regiser_buffer.peek.plot_train_validation_metric_curve(
+                metric=metric
+            )
         else:
             raise RuntimeError(
                 "Register buffer is empty. Metrics not Recorded! Pass record_loss=True"
             )
+
+        if hasattr(self, 'swa_register_buffer'):
+            ax.plot(
+                range(0, len(self.swa_register_buffer.peek['valid'][metric])),
+                self.swa_register_buffer.peek['valid'][metric].values,
+                color="green",
+                marker="h",
+                markersize=5,
+                label="SWA Model Validation Curve",
+                alpha=0.5,
+            )
+
+            ax.legend()
+            plt.tight_layout()
+            plt.plot()
 
     def predict(self, X: torch.Tensor) -> torch.Tensor:
         """Makes predictions using the trained model.
@@ -672,3 +818,284 @@ class NNtrainer(BaseTrainer):
 
         # CalcMemUse
         return mempool.calc_memusage(batch_shape, batch_dtype, recduction)
+
+    def compile(self, *args, **kwargs) -> None:  # noqa
+        """Compiles the module with provided arguments and keyword arguments.
+
+        This method compiles the model and sets the compiled model as the new model for the instance.
+        The compilation process may involve optimizations and other backend-specific operations.
+
+        Parameters:
+        -----------
+            *args: Variable-length argument list.
+                Additional arguments that can be passed to the torch.compile.
+
+            **kwargs: Variable-length keyword argument list.
+                Additional keyword arguments that can be passed to the torch.compile.
+
+        Returns:
+        --------
+            None
+        """
+        logger.debug(
+            "Compiled the model and reset self.model with self.model = torch.compile(self.model)"
+        )
+        self._model = torch.compile(self.model, *args, **kwargs)
+
+        return
+
+    def no_scheduler(self) -> None:
+        """Disables the learning rate scheduler for the trainer.
+
+        Note:
+        -----
+            This method sets the learning rate scheduler to None, effectively disabling any
+            learning rate schedule during training. The optimizer's learning rate will remain
+            constant throughout the training process.
+
+        Example:
+        --------
+            # Initialize trainer
+            trainer = MyTrainer(model, optimizer, loss_function)
+
+            # Disable the learning rate scheduler
+            trainer.no_scheduler()
+
+            # Start training with a constant learning rate
+            trainer.train()
+        """
+        self.scheduler = None
+        pass
+
+    def _link_scheduler(
+        self,
+        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        initial_lr: tp.Optional[float] = None,
+    ) -> None:
+        """Links the specified learning rate scheduler to the trainer.
+
+        Parameters:
+        -----------
+            scheduler (torch.optim.lr_scheduler.LRScheduler): The learning rate scheduler to be linked.
+            initial_lr (float, optional): The initial learning rate to set for the optimizer. Default is None.
+
+        Raises:
+        -------
+            AssertionError: If initial_lr is not greater than 0.
+
+        Note:
+        -----
+            This method links the provided learning rate scheduler to the trainer's optimizer.
+            If an initial_lr is provided, it sets this learning rate for all parameter groups in the optimizer.
+            Otherwise, the initial learning rate in the optimizer remains unchanged.
+        """
+        assert initial_lr > 0, "Initial Lr should not be in (0, inf)"
+
+        if self.scheduler is not None:
+            warnings.warn(
+                f"LR scheduler is already set! Overwriting current lr scheduler with {scheduler.__class__}"
+            )
+
+        self.scheduler = scheduler
+        self._check_optimizer_lr_link()
+
+        # Set initial to all param group
+        if initial_lr is not None:
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = initial_lr
+
+        return
+
+    def add_expdecay_lrs(
+        self, lr_initial: float, lr_final: float, epoch: int, verbose: bool = False
+    ) -> None:
+        """Adds an exponential learning rate scheduler to the trainer's optimizer.
+
+        Parameters:
+        -----------
+            lr_initial (float): The initial learning rate.
+            lr_final (float): The final learning rate. Should be smaller than lr_initial.
+            epoch (int): The total number of epochs for the exponential decay.
+            verbose (bool, optional): Whether to print verbose output during training. Default is False.
+
+        Raises:
+        -------
+            AssertionError: If lr_final is not smaller than lr_initial.
+
+        Note:
+        -----
+            This method sets an exponential learning rate scheduler using torch.optim.lr_scheduler.ExponentialLR
+            to the trainer's optimizer. The learning rate will decay exponentially from lr_initial to lr_final
+            over the specified number of epochs.
+
+        Example:
+        --------
+            # Initialize trainer
+            trainer = MyTrainer(model, optimizer, loss_function)
+
+            # Add exponential learning rate scheduler
+            trainer.add_expdecay_lrs(lr_initial=0.1, lr_final=0.01, epoch=10, verbose=True)
+
+            # Start training
+            trainer.train()
+        """
+        assert lr_final < lr_initial, "lr_final should be less than lr_initial"
+
+        # gamma calculation
+        gamma_ = pow(lr_final / lr_initial, 1 / epoch)
+
+        exp_scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            self.optimizer, gamma=gamma_, verbose=verbose
+        )
+
+        # Link Scheduler
+        self._link_scheduler(exp_scheduler, initial_lr=lr_initial)
+        logger.debug(
+            f'{self.scheduler.__class__} set to optimizer {self.optimizer.__repr__()}'
+        )
+
+        return
+
+    def add_stepdecay_lrs(
+        self,
+        lr_initial: float,
+        lr_final: float,
+        step: int,
+        epoch: int,
+        verbose: bool = False,
+    ) -> None:
+        """Adds a step decay learning rate scheduler to the trainer's optimizer.
+
+        Parameters:
+        -----------
+            lr_initial (float): The initial learning rate.
+            lr_final (float): The final learning rate. Should be smaller than lr_initial.
+            steps (int): The number of drops in lrs
+            epoch (int): The total number of epochs for the step decay.
+            verbose (bool, optional): Whether to print verbose output during training. Default is False.
+
+        Raises:
+        -------
+            AssertionError: If lr_final is not smaller than lr_initial or if step_size is not smaller than epoch.
+
+        Note:
+        -----
+            This method sets a step decay learning rate scheduler using torch.optim.lr_scheduler.StepLR
+            to the trainer's optimizer. The learning rate will be reduced from lr_initial to lr_final in
+            a stepwise manner every step_size epochs.
+
+        Example:
+        --------
+            # Initialize trainer
+            trainer = MyTrainer(model, optimizer, loss_function)
+
+            # Add step decay learning rate scheduler
+            trainer.add_stepdecay_lrs(lr_initial=0.1, lr_final=0.01, step_size=5, epoch=20, verbose=True)
+
+            # Start training
+            trainer.train()
+
+        """
+        assert lr_final < lr_initial, "lr_final should be less than lr_initial"
+        assert 1 <= step < epoch, "Step size should be in [1, inf)"
+
+        # Calculate gamma
+        gamma = pow(lr_final / lr_initial, 1 / step)
+
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer, epoch // step, gamma, verbose=verbose
+        )
+
+        self._link_scheduler(scheduler=scheduler, initial_lr=lr_initial)
+        logger.debug(
+            f'{self.scheduler.__class__} set to optimizer {id(self.optimizer)}'
+        )
+
+        return
+
+    def add_cosineannealing_lrs(
+        self,
+        lr_initial: float,
+        lr_final: float,
+        dips: int,
+        epoch: int,
+        verbose: bool = False,
+    ) -> None:
+        """Adds a Cosine Annealing learning rate scheduler to the trainer's optimizer.
+
+        Parameters:
+        -----------
+            lr_initial (float): The initial learning rate.
+            lr_final (float): The final learning rate.
+            dips (int): no of dips in the cosine. Use dips < epoch // 4
+            epoch (int) : max no of epoch
+            verbose (bool, optional): Whether to print verbose output during training. Default is False.
+
+        Note:
+        -----
+            This method sets a Cosine Annealing learning rate scheduler using torch.optim.lr_scheduler.CosineAnnealingLR
+            to the trainer's optimizer. The learning rate will anneal from lr_initial to lr_final following a cosine
+            annealing schedule over the specified number of epochs.
+
+        Example:
+        --------
+            # Initialize trainer
+            trainer = MyTrainer(model, optimizer, loss_function)
+
+            # Add Cosine Annealing learning rate scheduler
+            trainer.add_cosineannealing_lrs(lr_initial=0.1, lr_final=0.01, epoch=50, verbose=True)
+
+            # Start training
+            trainer.train()
+
+        """
+        # Calculate T_max for the CosineAnnealingLR scheduler
+        T_max = epoch / (dips * 2 - 1)
+
+        cos_annealing_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=T_max, eta_min=lr_final, verbose=verbose
+        )
+        # Link Scheduler
+        self._link_scheduler(cos_annealing_scheduler, initial_lr=lr_initial)
+        logger.debug(
+            f'Cosine Annealing LRscheduler set to optimizer {id(self.optimizer)}'
+        )
+        return
+
+    def add_gradient_clipping(self, min: float, max: float) -> None:
+        """Add gradient clipping to the model.
+
+        This method adds a hook to the backward pass of the model's parameters, which clips the gradients
+        during backpropagation to prevent exploding gradients. Gradient clipping helps stabilize the training
+        process and can prevent the model from diverging during optimization.
+
+        Parameters
+        ----------
+        min : float
+        The minimum value to which gradients will be clipped.
+        Gradients with values lower than this will be set to `min`.
+        max : float
+        The maximum value to which gradients will be clipped.
+        Gradients with values higher than this will be set to `max`.
+
+        Returns:
+        -------
+        None
+
+        Notes:
+        -----
+        Gradient clipping is often used to mitigate the issue of exploding gradients, which can occur when
+        training deep neural networks. By setting a range for the gradients, the model's parameters are
+        adjusted in a way that prevents them from taking very large steps during optimization, thus promoting
+        more stable and reliable training.
+
+        """
+        # Add a hook for the backward method to clip gradients
+        for param_groups in self.model.parameters():
+            param_groups.register_hook(
+                lambda gradients: torch.clip(gradients, min, max)
+            )
+
+        logger.debug(f'Clipped the gradients to min : {min} max : {max}')
+
+        return

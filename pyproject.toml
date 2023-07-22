@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 
 [project]
-name = "ConvinenceTorch"
+name = "convinence-torch"
 version = "1.0.0"
 readme = 'README.md'
 description = "minimalistic convenience utilities for using PyTorch"
@@ -34,12 +34,11 @@ Homepage = "https://github.com/NISCHALPI/ConvinenceTorch"
 
 
 [tool.ruff]
-select =["E", "F", "I", "UP", "ANN", "ARG", "D", "RET"]
-exclude = ["tests", "src/docs"]
+select =["E", "F", "I", "UP", "ANN", "ARG", "D", "RET", "TCH"]
+exclude = ["tests", "docs"]
 src =['./src/torchutils']
 # Ignore long lines and self annotations 
 ignore =['ANN101', 'E501']
-
 
 [tool.ruff.per-file-ignores]
 "__init__.py" = ["E402", "F401"]
@@ -51,4 +50,12 @@ docstring-quotes = "double"
 convention = "google"
 
 
+[tool.black]
+use-single-quotes = false
+line-length = 88
+skip-string-normalization = true
+target-version = ["py310", "py311", "py312"]
+
+[tool.black.paths]
+include = ["./src"]
 

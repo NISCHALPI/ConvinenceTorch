@@ -89,7 +89,7 @@ class BaseTrainer(ABC):
         # Optimizer
         self._model = model
         # OPTIMIZER
-        self.optimizer = optimizer
+        self._optimizer = optimizer
         # Loss
         self.loss = loss
 

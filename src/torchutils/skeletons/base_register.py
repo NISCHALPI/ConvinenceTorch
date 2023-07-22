@@ -245,7 +245,7 @@ class Register:
         self._records["time"] = {}
 
         # Initialize time to zero
-        for e in range(1, self._epoch + 1):
+        for e in range(0, self._epoch):
             self._records["time"][self._key(e)] = 0.0  # type: ignore
 
         # initalize the records
@@ -253,7 +253,7 @@ class Register:
             self._records[index] = {}
             for name in self._metrics:
                 self._records[index][name] = {}  # type: ignore
-                for e in range(1, self._epoch + 1):
+                for e in range(0, self._epoch):
                     self._records[index][name][self._key(e)] = []  # type: ignore
 
     def _check_metric(self, metric_name: str) -> bool:
@@ -371,7 +371,7 @@ class Register:
 
         # For Train
         # Index
-        index_train = [self._key(e) for e in range(1, self._epoch + 1)]
+        index_train = [self._key(e) for e in range(0, self._epoch)]
         # Set up the train
         self._records_per_epoch["train"] = pd.DataFrame(
             data=np.zeros(shape=(len(index_train), len(col_names))),
@@ -418,7 +418,7 @@ class Register:
 
     def plot_train_validation_metric_curve(
         self, metric: tp.Optional[str] = None
-    ) -> None:
+    ) -> plt.Axes:
         """Plots the training and validation metric curves.
 
         Parameters
@@ -429,14 +429,15 @@ class Register:
         if metric is None:
             metric = self._loss._get_name()
 
-        plt.figure(figsize=(10, 8))
-        plt.grid(visible=True, which="both", axis="both")
+        fig = plt.figure(figsize=(10, 8), dpi=150)
+        ax = fig.add_axes(111)
+        ax.grid(visible=True, which="both", axis="both")
 
         # Get Keys
         trainkey, validkey = "train", "valid"
 
-        plt.plot(
-            range(1, len(self.minimized_record[trainkey][metric]) + 1),
+        ax.plot(
+            range(0, len(self.minimized_record[trainkey][metric])),
             self.minimized_record[trainkey][metric].values,
             color="red",
             linestyle="-",
@@ -446,14 +447,14 @@ class Register:
             alpha=0.5,
         )
 
-        plt.xlabel("Epoch")
-        plt.ylabel(metric)
-        plt.title(f"Training and Validation {metric} Curves")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(metric)
+        ax.set_title(f"Training and Validation {metric} Curves")
 
         # If validation is non empty
         if validkey in self.minimized_record.keys() != 0:
-            plt.plot(
-                range(1, len(self.minimized_record[validkey][metric]) + 1),
+            ax.plot(
+                range(0, len(self.minimized_record[validkey][metric])),
                 self.minimized_record[validkey][metric].values,
                 color="purple",
                 alpha=0.5,
@@ -463,12 +464,8 @@ class Register:
                 label="Validation Curve",
             )
 
-        plt.legend()
-        plt.xticks(fontsize=10)
-        plt.yticks(fontsize=10)
-        plt.grid(linestyle="dotted", linewidth=0.5)
-        plt.tight_layout()
-        plt.show()
+        ax.grid(linestyle="dotted", linewidth=0.5)
+        return ax
 
     @property
     def records(self) -> dict:
